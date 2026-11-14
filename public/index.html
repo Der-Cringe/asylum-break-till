@@ -5,11 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#07111d" />
   <title>Asylum Break — Containment Breach</title>
-  <link rel="stylesheet" href="./style.css?v=20261113-1" />
+  <link rel="stylesheet" href="./style.css?v=20261114-fix1" />
+  <link rel="stylesheet" href="./ui-fixes.css?v=20261114-fix1" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen" aria-live="polite">
-    <div class="loader-mark">AB</div><strong>INITIALIZING FACILITY</strong><span id="loadingStatus">Loading 3D environment…</span>
+    <div class="loader-mark">AB</div><strong>INITIALIZING FACILITY</strong>
+    <span id="loadingStatus">Loading 3D environment…</span>
+    <button id="reloadButton" type="button" class="reload-button" hidden onclick="location.reload()">RELOAD</button>
   </div>
   <div id="hud" aria-live="polite">
     <div id="topBar"><span class="brand-mark">AB</span><span id="roleLabel">ROLE · NONE</span><span id="floorLabel">FLOOR · GROUND</span><span id="statusLabel">SELECT A CLASS</span></div>
@@ -23,28 +26,42 @@
     <div id="joystickZone" aria-label="Move joystick"><div id="movePad"><div id="moveStick"></div></div></div>
     <div id="mobileActions"><button id="sprintButton" class="mobileAction" type="button">SPRINT</button><button id="interactButton" class="mobileAction" type="button">STAIRS</button><button id="abilityButton" class="mobileAction" type="button">ABILITY</button><button id="fullscreenButton" class="mobileAction" type="button" aria-label="Toggle fullscreen">⛶</button></div>
   </div>
-  <div id="tabletPanel" class="tablet-panel hidden" aria-label="Tablet camera presets">
-    <strong>TABLET CAMERAS</strong>
-    <div id="cameraPresets"></div>
-  </div>
+  <div id="tabletPanel" class="tablet-panel hidden" aria-label="Tablet camera presets"><strong>TABLET CAMERAS</strong><div id="cameraPresets"></div></div>
   <main id="joinScreen">
     <div class="join-backdrop"></div>
-    <section class="panel">
-      <div class="title-wrap"><span class="eyebrow">CONTAINMENT BREACH · MULTIPLAYER PROTOTYPE</span><h1>ASYLUM<br /><em>BREAK</em></h1><p class="intro">The night shift is over. The lockdown is active, and each role is trying to reach a different outcome.</p></div>
+    <section class="panel" aria-labelledby="gameTitle">
+      <div class="title-wrap"><span class="eyebrow">CONTAINMENT BREACH · MULTIPLAYER PROTOTYPE</span><h1 id="gameTitle">ASYLUM<br /><em>BREAK</em></h1><p class="intro">The lockdown is active. Choose a class and deploy into the facility.</p></div>
       <label class="name-field">CALLSIGN<input id="playerName" maxlength="16" value="Player" autocomplete="nickname" /></label>
-      <div class="team-picker" id="teamPicker" aria-label="Team auswählen"></div>
       <div class="section-heading"><span>CHOOSE YOUR CLASS</span><span>01 — 04</span></div>
       <div class="roles" id="roleGrid">
-        <button class="roleButton orderly-card" data-role="orderly" type="button"><span class="role-card-art"><span class="silhouette orderly-silhouette"></span><span class="card-index">01</span></span><span class="role-meta"><span>Orderly</span><small>Containment</small></span></button>
-        <button class="roleButton medic-card" data-role="medic" type="button"><span class="role-card-art"><span class="silhouette medic-silhouette"></span><span class="card-index">02</span></span><span class="role-meta"><span>Medic</span><small>Field treatment</small></span></button>
-        <button class="roleButton director-card" data-role="director" type="button"><span class="role-card-art"><span class="silhouette director-silhouette"></span><span class="card-index">03</span></span><span class="role-meta"><span>Director</span><small>Override access</small></span></button>
-        <button class="roleButton patient-card" data-role="patient" type="button"><span class="role-card-art"><span class="silhouette patient-silhouette"></span><span class="card-index">04</span></span><span class="role-meta"><span>Patient</span><small>Adrenaline</small></span></button>
+        <button class="roleButton orderly-card" data-role="orderly" type="button"><span class="role-card-art"><img class="role-image" src="./assets/orderly.svg" alt="Orderly" /><span class="card-index">01</span></span><span class="role-meta"><span>Orderly</span><small>Containment</small></span></button>
+        <button class="roleButton medic-card" data-role="medic" type="button"><span class="role-card-art"><img class="role-image" src="./assets/medic.svg" alt="Medic" /><span class="card-index">02</span></span><span class="role-meta"><span>Medic</span><small>Field treatment</small></span></button>
+        <button class="roleButton director-card" data-role="director" type="button"><span class="role-card-art"><img class="role-image" src="./assets/director.svg" alt="Facility Director" /><span class="card-index">03</span></span><span class="role-meta"><span>Director</span><small>Override access</small></span></button>
+        <button class="roleButton patient-card" data-role="patient" type="button"><span class="role-card-art"><img class="role-image" src="./assets/patient.svg" alt="Patient" /><span class="card-index">04</span></span><span class="role-meta"><span>Patient</span><small>Adrenaline</small></span></button>
       </div>
       <footer class="join-footer"><span><i></i> FACILITY NETWORK READY</span><span>SELECT A CLASS TO DEPLOY</span></footer>
     </section>
   </main>
   <div id="crosshair" aria-hidden="true"><i></i><b></b></div>
+  <script>
+    // Keep an import or WebGL failure from trapping the player behind the boot screen.
+    window.setTimeout(() => {
+      const loading = document.getElementById('loadingScreen');
+      if (loading && !loading.classList.contains('done')) {
+        const status = document.getElementById('loadingStatus');
+        const retry = document.getElementById('reloadButton');
+        if (status) status.textContent = 'The game is taking longer than expected. Check your connection and reload.';
+        if (retry) retry.hidden = false;
+      }
+    }, 12000);
+    window.addEventListener('error', () => {
+      const status = document.getElementById('loadingStatus');
+      const retry = document.getElementById('reloadButton');
+      if (status && document.getElementById('loadingScreen')) status.textContent = 'A game resource failed to load. Check the connection and reload.';
+      if (retry) retry.hidden = false;
+    });
+  </script>
   <script src="/socket.io/socket.io.js"></script>
-  <script type="module" src="./game.js?v=20261113-1"></script>
+  <script type="module" src="./game.js?v=20261114-fix1"></script>
 </body>
 </html>
