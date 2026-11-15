@@ -1,10 +1,13 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-2';
+
+const ITEMS = window.ITEMS || {};
 
 const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
-  orderly: { name: 'Orderly', color: 0x2878d0, floor: 2, x: 70, z: 0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs'], ability: 'Containment', maxHealth: 115 },
-  medic: { name: 'Medic', color: 0x35b987, floor: 2, x: -70, z: 0, items: ['smallMedicalKit', 'mediumMedicalKit'], ability: 'Field treatment', maxHealth: 100 },
-  director: { name: 'Facility Director', color: 0x9670d5, floor: 1, x: 70, z: 43, items: ['stunBaton', 'ignotusShield', 'tablet'], ability: 'Override access', maxHealth: 100 },
+  orderly: { name: 'Orderly', color: 0x2878d0, floor: 2, x: 70, z: 0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
+  medic: { name: 'Medic', color: 0x35b987, floor: 2, x: -70, z: 0, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'], ability: 'Field treatment', maxHealth: 100 },
+  director: { name: 'Facility Director', color: 0x9670d5, floor: 1, x: 70, z: 43, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
   patient: { name: 'Patient', color: 0xc85953, floor: 3, x: -72, z: 8, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
 };
 const FLOOR_Y = [0, 9, 18, 27];
@@ -19,7 +22,11 @@ const CAMERA_PRESETS = [
   { label: 'Ward', floor: 3, x: -18, z: 56, yaw: 2.5, pitch: 0.42 },
   { label: 'Exit', floor: 0, x: 0, z: -40, yaw: 0.5, pitch: 0.55 },
 ];
-const state = { role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: 0.34, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null };
+const state = {
+  role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: 0.34, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null,
+  // Combat status from the server, converted to local performance.now() deadlines.
+  stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, look: null,
+};
 const keys = new Set();
 const remoteActors = new Map();
 const joystick = { active: false, pointer: null, x: 0, y: 0 };
@@ -140,6 +147,33 @@ function buildFloor(index) {
 }
 for (let i = 0; i < FLOOR_Y.length; i++) buildFloor(i);
 
+const effects = new EffectLayer({ floors, floorY: FLOOR_Y, actorFor: id => (id === state.id ? state.actor : remoteActors.get(id)) });
+// Loot lying around the map: a slowly spinning item over a glowing ring. Walk over it to pick it up.
+const pickupMeshes = new Map();
+const pickupRingMaterial = new THREE.MeshBasicMaterial({ color: 0x7de4c8, transparent: true, opacity: 0.55 });
+const PICKUP_RING = new THREE.RingGeometry(0.7, 0.95, 24);
+function syncPickups(list) {
+  const present = new Set();
+  for (const pickup of list) {
+    if (!pickup || !ITEMS[pickup.item] || !floors[pickup.floor]) continue;
+    const key = `${pickup.id}:${pickup.item}`;
+    present.add(key);
+    if (pickupMeshes.has(key)) continue;
+    const group = new THREE.Group();
+    const ring = new THREE.Mesh(PICKUP_RING, pickupRingMaterial); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.04; group.add(ring);
+    const model = makeItemModel(pickup.item, ITEMS[pickup.item].color); model.scale.setScalar(1.4); model.position.y = 1; group.add(model);
+    group.userData.model = model;
+    group.position.set(pickup.x, FLOOR_Y[pickup.floor], pickup.z);
+    floors[pickup.floor].add(group);
+    pickupMeshes.set(key, group);
+  }
+  for (const [key, group] of pickupMeshes) if (!present.has(key)) { group.parent?.remove(group); pickupMeshes.delete(key); }
+}
+function flashDamage() {
+  const overlay = document.getElementById('damageFlash');
+  overlay.classList.remove('visible'); void overlay.offsetWidth; overlay.classList.add('visible');
+}
+
 function blocked(x, z, floor) {
   return colliders[floor].some(box => x + PLAYER_RADIUS > box.minX && x - PLAYER_RADIUS < box.maxX && z + PLAYER_RADIUS > box.minZ && z - PLAYER_RADIUS < box.maxZ);
 }
@@ -157,7 +191,12 @@ function makeCharacter(roleKey) {
   addPart(-0.3, 0.16, 0, 0.43, 1.08, 0.46, dark);
   addPart(0.3, 0.16, 0, 0.43, 1.08, 0.46, dark);
   addPart(-0.77, 1.44, 0, 0.37, 1.06, 0.42, uniform);
-  addPart(0.77, 1.44, 0, 0.37, 1.06, 0.42, uniform);
+  // The item arm hangs from a shoulder pivot so it can swing; held items attach to its hand.
+  const arm = new THREE.Group(); arm.position.set(0.77, 1.97, 0); root.add(arm);
+  addBox(arm, 0, -0.53, 0, 0.37, 1.06, 0.42, uniform);
+  const hand = new THREE.Group(); hand.position.set(0, -1.0, 0.12); arm.add(hand);
+  root.userData.arm = arm; root.userData.hand = hand; root.userData.role = roleKey;
+  root.rotation.order = 'YXZ'; // Knocked-out characters tip over relative to where they face.
   addPart(0, 2.62, 0.02, 0.82, 0.82, 0.74, skin);
   addPart(0, 3.07, -0.01, 0.86, 0.22, 0.78, roleKey === 'medic' ? 0x7d463c : 0x1b2532);
   addPart(-0.18, 2.65, 0.4, 0.085, 0.09, 0.045, 0x101820);
@@ -179,7 +218,59 @@ function makeCharacter(roleKey) {
     addPart(0.86, 1.2, 0.16, 0.09, 0.72, 0.12, 0xe9edf0);
     addPart(-0.36, 1.7, 0.31, 0.25, 0.08, 0.05, 0xb96851);
   }
+  // Spinning stars over the head while stunned.
+  const stars = new THREE.Group(); stars.position.y = 3.6; stars.visible = false; root.add(stars);
+  for (let i = 0; i < 3; i++) {
+    const angle = (i / 3) * Math.PI * 2;
+    addBox(stars, Math.cos(angle) * 0.6, 0, Math.sin(angle) * 0.6, 0.2, 0.2, 0.2, starMaterial, { castShadow: false });
+  }
+  root.userData.stars = stars;
   return root;
+}
+const starMaterial = new THREE.MeshBasicMaterial({ color: 0xffe066 });
+const barBackMaterial = new THREE.MeshBasicMaterial({ color: 0x14202b, transparent: true, opacity: 0.8, depthTest: false });
+const barFillMaterial = new THREE.MeshBasicMaterial({ color: 0x5af07f, depthTest: false });
+const barLowMaterial = new THREE.MeshBasicMaterial({ color: 0xf06a4f, depthTest: false });
+const BAR_PLANE = new THREE.PlaneGeometry(1, 1);
+// Floating health bar for other players, only shown once they are hurt.
+function healthBar(actor) {
+  if (actor.userData.bar) return actor.userData.bar;
+  const bar = new THREE.Group(); bar.position.y = 3.95; bar.renderOrder = 10;
+  const back = new THREE.Mesh(BAR_PLANE, barBackMaterial); back.scale.set(1.7, 0.24, 1); back.renderOrder = 10;
+  const fill = new THREE.Mesh(BAR_PLANE, barFillMaterial); fill.position.z = 0.01; fill.renderOrder = 11;
+  bar.add(back, fill); bar.userData.fill = fill;
+  actor.add(bar); actor.userData.bar = bar;
+  return bar;
+}
+// Shows what a character holds and whether it is stunned, knocked out or hurt.
+function applyActorStatus(actor, status) {
+  const item = status.equippedItem ?? null;
+  if (actor.userData.item !== item) {
+    actor.userData.item = item;
+    actor.userData.hand.clear();
+    if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
+  }
+  actor.userData.down = Boolean(status.down);
+  actor.userData.stars.visible = Boolean(status.stunned) && !status.down;
+  if (Number.isFinite(status.health) && Number.isFinite(status.maxHealth) && actor !== state.actor) {
+    const hurt = status.health < status.maxHealth && !status.down;
+    const bar = healthBar(actor); bar.visible = hurt;
+    const ratio = Math.max(0, status.health / status.maxHealth);
+    bar.userData.fill.scale.set(1.6 * ratio, 0.16, 1);
+    bar.userData.fill.position.x = -0.8 * (1 - ratio);
+    bar.userData.fill.material = ratio < 0.35 ? barLowMaterial : barFillMaterial;
+  }
+}
+// Per-frame pose: arm swing, lying down when knocked out, spinning stars, bars facing the camera.
+const barQuaternion = new THREE.Quaternion();
+function animateActor(actor, dt, baseY) {
+  const data = actor.userData;
+  data.swing = Math.max(0, (data.swing || 0) - dt);
+  data.arm.rotation.x = data.swing > 0 ? -Math.sin((data.swing / 0.3) * Math.PI) * 1.7 : 0;
+  actor.rotation.x = data.down ? -Math.PI / 2 : 0;
+  actor.position.y = baseY + (data.down ? 0.45 : 0);
+  if (data.stars.visible) data.stars.rotation.y += dt * 5;
+  if (data.bar?.visible) data.bar.quaternion.copy(actor.getWorldQuaternion(barQuaternion).invert().multiply(camera.quaternion));
 }
 
 function showNotice(message) {
@@ -225,24 +316,105 @@ function sendPosition() {
   socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw });
 }
 function readableItem(item) {
-  return item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
+  return ITEMS[item]?.name ?? item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
 }
 function selectItem(item) {
   state.equipped = item;
   document.querySelectorAll('.equipment-slot').forEach(el => el.classList.toggle('selected', el.dataset.item === item));
   document.getElementById('tabletPanel').classList.toggle('hidden', item !== 'tablet');
   if (item !== 'tablet') setView(null);
+  if (state.actor) applyActorStatus(state.actor, { equippedItem: item, stunned: isStunned(), down: isDown() });
 }
-function renderSlots(items) {
-  state.items = items;
-  const slots = document.getElementById('equipmentSlots'); slots.replaceChildren();
-  items.forEach((item, index) => {
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'equipment-slot'; button.dataset.item = item;
-    const number = document.createElement('span'); number.className = 'slot-number'; number.textContent = String(index + 1);
-    button.append(number, readableItem(item));
-    button.addEventListener('click', () => { selectItem(item); socket?.emit('equipItem', { item }); });
-    slots.appendChild(button);
+// Slots are { item, uses, cooldown } from the server; plain item names work before it answers.
+function renderSlots(slotsData) {
+  const items = slotsData.map(slot => (typeof slot === 'string' ? { item: slot, uses: ITEMS[slot]?.uses ?? null, cooldown: 0 } : slot));
+  const now = performance.now();
+  const signature = items.map(slot => slot.item).join('|');
+  const slots = document.getElementById('equipmentSlots');
+  if (signature !== state.slotSignature) {
+    state.slotSignature = signature;
+    slots.replaceChildren();
+    items.forEach((slot, index) => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'equipment-slot'; button.dataset.item = slot.item;
+      const number = document.createElement('span'); number.className = 'slot-number'; number.textContent = String(index + 1);
+      const label = document.createElement('span'); label.className = 'slot-label'; label.textContent = readableItem(slot.item);
+      const uses = document.createElement('span'); uses.className = 'slot-uses';
+      const cooldown = document.createElement('span'); cooldown.className = 'slot-cooldown';
+      button.append(number, label, uses, cooldown);
+      button.addEventListener('click', () => equip(slot.item));
+      slots.appendChild(button);
+    });
+  }
+  state.items = items.map(slot => ({ ...slot, readyAt: now + (slot.cooldown || 0), total: (ITEMS[slot.item]?.cooldown ?? 0) * 1000 }));
+  slots.querySelectorAll('.equipment-slot').forEach((button, index) => {
+    const slot = items[index];
+    button.querySelector('.slot-uses').textContent = slot?.uses != null ? `×${slot.uses}` : '';
+    button.classList.toggle('selected', button.dataset.item === state.equipped);
   });
+  if (state.equipped && !items.some(slot => slot.item === state.equipped)) selectItem(null);
+}
+function equip(item) {
+  // Picking the item that is already in hand puts it away again.
+  const next = state.equipped === item ? null : item;
+  selectItem(next);
+  socket?.emit('equipItem', { item: next });
+}
+function updateSlotCooldowns(now) {
+  const buttons = document.querySelectorAll('.equipment-slot');
+  state.items.forEach((slot, index) => {
+    const bar = buttons[index]?.querySelector('.slot-cooldown'); if (!bar) return;
+    const left = slot.readyAt - now;
+    bar.style.transform = `scaleX(${left > 0 && slot.total > 0 ? Math.min(1, left / slot.total) : 0})`;
+  });
+}
+const isStunned = () => performance.now() < Math.max(state.stunnedUntil, state.downUntil);
+const isDown = () => performance.now() < state.downUntil;
+function useItem() {
+  if (!state.role || !state.equipped || state.view) return;
+  const def = ITEMS[state.equipped];
+  if (!def || def.kind === 'tool') return;
+  if (isStunned()) { showNotice(isDown() ? 'You are knocked out' : 'You are stunned'); return; }
+  const slot = state.items.find(entry => entry.item === state.equipped);
+  if (slot && slot.readyAt > performance.now()) return;
+  if (!socket?.connected) { showNotice('Items need the server connection'); return; }
+  // Swing immediately so melee feels responsive; the server decides what it hit.
+  if (def.kind === 'melee') state.actor.userData.swing = 0.3;
+  socket.emit('useItem', { yaw: state.yaw });
+}
+function applySelfState(data) {
+  const now = performance.now();
+  if (Number.isFinite(data.health) && Number.isFinite(data.maxHealth)) setHealth(data.health, data.maxHealth);
+  if (Array.isArray(data.inventory)) renderSlots(data.inventory.filter(slot => slot && typeof slot.item === 'string'));
+  if (data.equippedItem !== undefined && data.equippedItem !== state.equipped) selectItem(data.equippedItem);
+  const wasDown = isDown();
+  state.stunnedUntil = now + (Number(data.stunned) || 0);
+  state.downUntil = now + (Number(data.down) || 0);
+  state.slowedUntil = now + (Number(data.slowed) || 0);
+  state.speed = Number(data.speed) || 1;
+  if (!wasDown && isDown()) showNotice('Knocked out · respawning');
+  const look = data.look ?? null;
+  if (look !== state.look && state.role) {
+    state.look = look;
+    // Disguised players see themselves in the borrowed uniform, just like everyone else does.
+    state.actor?.parent?.remove(state.actor);
+    state.actor = makeCharacter(look || state.role); scene.add(state.actor);
+    state.actor.userData.item = undefined;
+  }
+  if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown() });
+  updateStatusEffect();
+}
+function updateStatusEffect() {
+  const now = performance.now();
+  const element = document.getElementById('statusEffect');
+  let text = '';
+  if (now < state.downUntil) text = `Knocked out · ${Math.ceil((state.downUntil - now) / 1000)}s`;
+  else if (now < state.stunnedUntil) text = `Stunned · ${Math.ceil((state.stunnedUntil - now) / 1000)}s`;
+  else if (now < state.slowedUntil) text = 'Slowed';
+  else if (state.speed > 1) text = 'Speed boost';
+  else if (state.look) text = 'Disguised';
+  if (element.textContent !== text) element.textContent = text;
+  element.classList.toggle('visible', Boolean(text));
+  element.classList.toggle('bad', now < Math.max(state.downUntil, state.stunnedUntil, state.slowedUntil));
 }
 function setView(preset) {
   state.view = preset;
@@ -266,6 +438,7 @@ renderCameraPresets();
 function chooseRole(roleKey) {
   const role = ROLES[roleKey]; if (!role) return;
   state.role = roleKey; state.x = role.x; state.z = role.z;
+  Object.assign(state, { look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, slotSignature: null });
   state.actor?.parent?.remove(state.actor);
   state.actor = makeCharacter(roleKey); scene.add(state.actor);
   setView(null);
@@ -301,9 +474,7 @@ if (socket) {
     if (Number.isFinite(data.x)) state.x = data.x;
     if (Number.isFinite(data.z)) state.z = data.z;
     if (Number.isInteger(data.floor)) setFloor(data.floor);
-    if (Number.isFinite(data.health) && Number.isFinite(data.maxHealth)) setHealth(data.health, data.maxHealth);
-    if (Array.isArray(data.inventory)) renderSlots(data.inventory.filter(item => typeof item === 'string'));
-    selectItem(data.equippedItem ?? null);
+    applySelfState(data);
     if (data.resumed) showNotice('Reconnected · position restored');
   });
   socket.on('joinRejected', data => leaveToJoinScreen(data?.reason || 'Could not join. Pick another class.'));
@@ -320,13 +491,24 @@ if (socket) {
     for (const person of list) {
       if (!person || person.id === state.id || !Number.isInteger(person.floor)) continue;
       let actor = remoteActors.get(person.id);
+      // A disguised patient is drawn in the uniform it stole, so rebuild when the look changes.
+      const look = person.look || person.role;
+      if (actor && actor.userData.role !== look) { scene.remove(actor); actor = null; }
       if (!actor) {
-        actor = makeCharacter(person.role); remoteActors.set(person.id, actor); scene.add(actor);
+        actor = makeCharacter(look); remoteActors.set(person.id, actor); scene.add(actor);
         actor.position.set(person.x, FLOOR_Y[person.floor] || 0, person.z);
       }
       actor.userData.target = person;
+      applyActorStatus(actor, person);
     }
   });
+  socket.on('selfState', data => { if (data && state.role) applySelfState(data); });
+  socket.on('effect', data => {
+    if (!data || typeof data.type !== 'string') return;
+    effects.handle(data);
+    if (data.type === 'hit' && data.floor === state.floor && Math.hypot(data.x - state.x, data.z - state.z) < 0.5) flashDamage();
+  });
+  socket.on('pickups', list => { if (Array.isArray(list)) syncPickups(list); });
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
@@ -352,25 +534,32 @@ window.addEventListener('keydown', event => {
   if (event.code === 'KeyE') changeFloor(1);
   if (event.code === 'KeyF') changeFloor(-1);
   if (event.code === 'KeyQ') useAbility();
-  if (/^Digit[1-4]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
+  if (event.code === 'Space') useItem();
+  if (/^Digit[1-6]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
 }, { passive: false });
 window.addEventListener('keyup', event => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 
 renderer.domElement.addEventListener('pointerdown', event => {
   if (event.target.closest?.('button')) return;
-  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId };
+  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: 0, mouse: event.pointerType === 'mouse' && event.button === 0 };
   renderer.domElement.setPointerCapture?.(event.pointerId);
 });
 renderer.domElement.addEventListener('pointermove', event => {
   if (!lastCameraPointer || event.pointerId !== lastCameraPointer.id) return;
   const dx = event.clientX - lastCameraPointer.x, dy = event.clientY - lastCameraPointer.y;
+  lastCameraPointer.moved += Math.abs(dx) + Math.abs(dy);
   state.yaw -= dx * 0.006;
   state.pitch = THREE.MathUtils.clamp(state.pitch - dy * 0.004, -0.25, 0.8);
   lastCameraPointer.x = event.clientX; lastCameraPointer.y = event.clientY;
 });
 for (const type of ['pointerup', 'pointercancel']) {
-  renderer.domElement.addEventListener(type, event => { if (event.pointerId === lastCameraPointer?.id) lastCameraPointer = null; });
+  renderer.domElement.addEventListener(type, event => {
+    if (event.pointerId !== lastCameraPointer?.id) return;
+    // A mouse click that did not turn the camera uses the held item.
+    if (type === 'pointerup' && lastCameraPointer.mouse && lastCameraPointer.moved < 6) useItem();
+    lastCameraPointer = null;
+  });
 }
 
 const joystickZone = document.getElementById('joystickZone');
@@ -404,6 +593,7 @@ for (const type of ['pointerup','pointercancel','pointerleave']) sprintButton.ad
 document.getElementById('stairsUpButton').addEventListener('click', () => changeFloor(1));
 document.getElementById('stairsDownButton').addEventListener('click', () => changeFloor(-1));
 document.getElementById('abilityButton').addEventListener('click', useAbility);
+document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
 document.getElementById('fullscreenButton').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); } catch (_) { showNotice('Fullscreen is unavailable in this browser'); }
 });
@@ -413,12 +603,16 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
+  const now = performance.now();
   if (state.role && state.actor) {
     let forward = Number(keys.has('KeyW') || keys.has('ArrowUp')) - Number(keys.has('KeyS') || keys.has('ArrowDown'));
     let sideways = Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
     if (joystick.active) { forward = -joystick.y; sideways = joystick.x; }
     const length = Math.hypot(forward, sideways); if (length > 1) { forward /= length; sideways /= length; }
-    const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 14 : 8;
+    // Stunned or knocked-out players cannot move; the server ignores their position updates anyway.
+    if (isStunned()) { forward = 0; sideways = 0; }
+    const slowed = now < state.slowedUntil, boosted = state.speed > 1 && !slowed;
+    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 14 : 8) * (slowed ? 0.55 : 1) * (boosted ? state.speed : 1);
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
     const stepX = (-Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt;
     const stepZ = (-Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt;
@@ -429,8 +623,11 @@ function animate() {
     state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
     state.actor.rotation.y = state.yaw + Math.PI;
     state.actor.visible = visibleFloor === state.floor;
+    animateActor(state.actor, dt, FLOOR_Y[state.floor]);
     updateCamera(1 - Math.exp(-7 * dt));
-    if (socket?.connected && performance.now() - lastNetworkUpdate > 100) sendPosition();
+    if (socket?.connected && now - lastNetworkUpdate > 100) sendPosition();
+    updateSlotCooldowns(now);
+    updateStatusEffect();
   }
   // Remote players glide towards their last reported position instead of jumping every tick.
   const smoothing = 1 - Math.exp(-12 * dt);
@@ -438,9 +635,14 @@ function animate() {
     const target = actor.userData.target; if (!target) continue;
     actor.position.x += (target.x - actor.position.x) * smoothing;
     actor.position.z += (target.z - actor.position.z) * smoothing;
-    actor.position.y = FLOOR_Y[target.floor] || 0;
     actor.rotation.y = (Number(target.yaw) || 0) + Math.PI;
     actor.visible = target.floor === visibleFloor;
+    animateActor(actor, dt, FLOOR_Y[target.floor] || 0);
+  }
+  effects.update(dt);
+  for (const group of pickupMeshes.values()) {
+    group.userData.model.rotation.y += dt * 1.6;
+    group.userData.model.position.y = 1 + Math.sin(now / 400 + group.position.x) * 0.15;
   }
   renderer.render(scene, camera);
 }
