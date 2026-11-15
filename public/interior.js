@@ -406,14 +406,7 @@ const BUILDERS = {
   nightstand(p) { p.box(0, 0, 0, 1.4, 1.4, 1.2, mat(0x8a8f8c)); },
   whiteboard(p) { p.box(0, 1.8, 0, 7, 3, 0.1, M.white, false); p.box(0, 1.75, 0, 7.2, 0.1, 0.2, M.steel, false); p.box(-1.6, 2.6, 0.06, 2.4, 0.06, 0.01, mat(0x2050c0), false); p.box(1.0, 3.4, 0.06, 3.4, 0.06, 0.01, mat(0xc03030), false); },
   tv(p) { p.box(0, 2.2, 0, 7, 4, 0.2, M.black, false); p.box(0, 2.4, 0.11, 6.6, 3.6, 0.02, mat(0x0d1b26, { emissive: 0x2c5f8a, glow: 0.8 }), false); },
-  stairs(p) {
-    const step = mat(0x6a737b, { roughness: 0.7 }), edge = mat(0xd8b23a, { roughness: 0.6 });
-    for (let i = 0; i < 10; i++) { p.box(0, 0, -5.5 + i * 1.25, 4, 0.36 * (i + 1), 1.25, step); p.box(0, 0.36 * (i + 1) - 0.02, -5.5 + i * 1.25 - 0.55, 4, 0.04, 0.15, edge, false); }
-    for (const x of [-2.15, 2.15]) {
-      p.box(x, 0, 0, 0.3, 4.2, 12.4, mat(0x4b545c));
-      p.box(x, 4.2, 0, 0.12, 0.12, 12.4, M.steel);
-    }
-  },
+
 };
 
 function buildWalls(batch, floor, y) {
@@ -496,11 +489,70 @@ function buildWindows(batch, floor, y) {
   }
 }
 
+// What is left of the rectangle once the holes are cut out of it, as a few smaller rectangles.
+function cutHoles(rect, holes) {
+  let pieces = [rect];
+  for (const h of holes) {
+    const next = [];
+    for (const r of pieces) {
+      if (h.maxX <= r.x1 || h.minX >= r.x2 || h.maxZ <= r.z1 || h.minZ >= r.z2) { next.push(r); continue; }
+      const x1 = Math.max(r.x1, h.minX), x2 = Math.min(r.x2, h.maxX), z1 = Math.max(r.z1, h.minZ), z2 = Math.min(r.z2, h.maxZ);
+      if (r.x1 < x1) next.push({ x1: r.x1, z1: r.z1, x2: x1, z2: r.z2 });
+      if (x2 < r.x2) next.push({ x1: x2, z1: r.z1, x2: r.x2, z2: r.z2 });
+      if (r.z1 < z1) next.push({ x1, z1: r.z1, x2, z2: z1 });
+      if (z2 < r.z2) next.push({ x1, z1: z2, x2, z2: r.z2 });
+    }
+    pieces = next;
+  }
+  return pieces;
+}
+// Openings in this floor (stairs arriving from below) and in its ceiling (stairs going up).
+const holesIn = floor => L.STAIRS.filter(stair => stair.floor + 1 === floor).map(L.stairBody);
+const holesAbove = floor => L.STAIRS.filter(stair => stair.floor === floor).map(L.stairBody);
+
+function buildStairs(batch, floor, y) {
+  const { run, width, rail, steps } = L.STAIR;
+  const step = mat(0x6a737b, { roughness: 0.7 }), edge = mat(0xd8b23a, { roughness: 0.6 }), side = mat(0x4b545c);
+  const shaft = mat(0x3a4046, { roughness: 0.9 });
+  const w = width / 2;
+  // A box in stair space: s along the steps, t across, both from..to.
+  const add = (stair, s1, s2, t1, t2, y1, y2, material, shadow = true) => {
+    const box = L.stairBox(stair, s1, s2, t1, t2);
+    batch.add(BOX, material, (box.minX + box.maxX) / 2, y + (y1 + y2) / 2, (box.minZ + box.maxZ) / 2, box.maxX - box.minX, y2 - y1, box.maxZ - box.minZ, 0, shadow);
+  };
+  for (const stair of L.STAIRS) {
+    if (stair.floor === floor) {
+      const rise = L.FLOOR_Y[floor + 1] - y, depth = run / steps, lift = rise / steps;
+      for (let i = 0; i < steps; i++) {
+        const s1 = i * depth, s2 = s1 + depth, top = (i + 1) * lift;
+        add(stair, s1, s2, -w, w, 0, top, step);
+        add(stair, s1, s1 + 0.15, -w, w, top - 0.02, top + 0.02, edge, false);
+        // Stepped side walls with a handrail on top.
+        for (const t of [w, -w - rail]) {
+          add(stair, s1, s2, t, t + rail, 0, top + 1.1, side);
+          add(stair, s1, s2, t + rail / 2 - 0.08, t + rail / 2 + 0.08, top + 1.1, top + 1.25, M.steel, false);
+        }
+      }
+      // Close the gap between this ceiling and the slab above around the opening.
+      const box = L.stairBody(stair), top = WH, bottom = rise;
+      const x = (box.minX + box.maxX) / 2, z = (box.minZ + box.maxZ) / 2, sx = box.maxX - box.minX, sz = box.maxZ - box.minZ;
+      batch.add(BOX, shaft, x, y + (top + bottom) / 2, box.minZ, sx, bottom - top, 0.1, 0, false);
+      batch.add(BOX, shaft, x, y + (top + bottom) / 2, box.maxZ, sx, bottom - top, 0.1, 0, false);
+      batch.add(BOX, shaft, box.minX, y + (top + bottom) / 2, z, 0.1, bottom - top, sz, 0, false);
+      batch.add(BOX, shaft, box.maxX, y + (top + bottom) / 2, z, 0.1, bottom - top, sz, 0, false);
+    } else if (stair.floor + 1 === floor) {
+      // Railing around the hole, open at the top end where the steps arrive.
+      for (const t of [w, -w - rail]) add(stair, 0, run, t, t + rail, 0, 1.2, M.steel);
+      add(stair, -rail, 0, -w - rail, w + rail, 0, 1.2, M.steel);
+      for (const t of [w + rail / 2, -w - rail / 2]) add(stair, run - 0.2, run, t - 0.2, t + 0.2, 0, 1.6, M.yellow);
+    }
+  }
+}
+
 function buildCeiling(batch, floor, y) {
-  plane(batch, ceilingMaterial, -89, -65, 89, 65, y + WH - 0.01, 5, true);
-  // The opening above each staircase, so the steps lead somewhere.
-  const hole = mat(0x0b0f13, { roughness: 1 });
-  for (const stair of L.STAIRS) batch.add(BOX, hole, stair.x, y + WH - 0.03, stair.z + 3, 4.2, 0.02, 5, 0, false);
+  const holes = holesAbove(floor);
+  for (const r of cutHoles({ x1: -89, z1: -65, x2: 89, z2: 65 }, holes)) plane(batch, ceilingMaterial, r.x1, r.z1, r.x2, r.z2, y + WH - 0.01, 5, true);
+  const inHole = (x, z) => holes.some(h => x > h.minX - 2 && x < h.maxX + 2 && z > h.minZ - 1 && z < h.maxZ + 1);
   // Light panels on a grid in every room; corridors get a strip down the middle.
   for (const room of L.rooms[floor]) {
     const w = room.x2 - room.x1, d = room.z2 - room.z1;
@@ -509,13 +561,14 @@ function buildCeiling(batch, floor, y) {
       const length = along ? w : d;
       for (let s = 4; s < length - 2; s += 9) {
         const x = along ? room.x1 + s : (room.x1 + room.x2) / 2, z = along ? (room.z1 + room.z2) / 2 : room.z1 + s;
-        if (Math.abs(x) < 5.5 && Math.abs(z) < 5.5 && !along) continue;
+        if ((Math.abs(x) < 5.5 && Math.abs(z) < 5.5 && !along) || inHole(x, z)) continue;
         batch.add(BOX, lightPanelMaterial, x, y + WH - 0.08, z, along ? 3.6 : 1.2, 0.1, along ? 1.2 : 3.6, 0, false);
       }
       continue;
     }
     const nx = Math.max(1, Math.round(w / 12)), nz = Math.max(1, Math.round(d / 12));
     for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+      if (inHole(room.x1 + (i + 0.5) * w / nx, room.z1 + (j + 0.5) * d / nz)) continue;
       batch.add(BOX, lightPanelMaterial, room.x1 + (i + 0.5) * w / nx, y + WH - 0.08, room.z1 + (j + 0.5) * d / nz, 3.4, 0.1, 1.4, 0, false);
     }
   }
@@ -538,15 +591,19 @@ export function buildInterior(floors) {
   L.FLOOR_Y.forEach((y, floor) => {
     const group = floors[floor];
     const batch = new Batch();
-    // Structural slab, then a finish per room on top of it.
-    batch.add(BOX, mat(0x6d7275, { roughness: 0.95 }), 0, y - 0.3, 0, 180, 0.6, 132, 0, false);
+    // Structural slab, then a finish per room on top of it, both with openings for stairs from below.
+    const holes = holesIn(floor), slab = mat(0x6d7275, { roughness: 0.95 });
+    for (const r of cutHoles({ x1: -90, z1: -66, x2: 90, z2: 66 }, holes)) {
+      batch.add(BOX, slab, (r.x1 + r.x2) / 2, y - 0.3, (r.z1 + r.z2) / 2, r.x2 - r.x1, 0.6, r.z2 - r.z1, 0, false);
+    }
     for (const room of L.rooms[floor]) {
       const style = FLOOR_STYLES[room.style] ? room.style : 'tile';
-      plane(batch, floorMaterial(style), room.x1, room.z1, room.x2, room.z2, y + 0.012, FLOOR_STYLES[style].tile);
+      for (const r of cutHoles(room, holes)) plane(batch, floorMaterial(style), r.x1, r.z1, r.x2, r.z2, y + 0.012, FLOOR_STYLES[style].tile);
     }
     buildWalls(batch, floor, y);
     buildWindows(batch, floor, y);
     buildCeiling(batch, floor, y);
+    buildStairs(batch, floor, y);
     for (const item of L.furniture[floor]) BUILDERS[item.type]?.(placer(batch, item, y), item);
     batch.flush(group);
     for (const sign of L.signs[floor]) {

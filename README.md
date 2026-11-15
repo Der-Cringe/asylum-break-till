@@ -7,7 +7,7 @@ A browser-based 3D multiplayer prototype inspired by a prison-asylum escape game
 - First-person and third-person camera: V, the mouse wheel or the 1ST/3RD button on touch screens
 - Role selection: Patient, Medic, Orderly, Director
 - Per-role spawn locations
-- Stairwells between floors (E / ▲ up, F / ▼ down) and simple collision with beds, lab walls and tables
+- Walkable staircases between floors, placed in random rooms each time the server starts; jump with Space (JUMP on touch) and simple collision with beds, lab walls and tables
 - Director tablet with camera views (equip the tablet, slot 4)
 - Items and combat: melee weapons, throwables, a taser, shields, arrests, med kits and drinks (see below)
 - Multiplayer support through Socket.IO

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-3';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-4';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
-import { buildInterior } from './interior.js?v=20261115-2';
+import { buildInterior } from './interior.js?v=20261115-3';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -14,9 +14,10 @@ const ROLES = {
   patient: { name: 'Patient', color: 0xc85953, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
 };
 for (const [role, def] of Object.entries(ROLES)) Object.assign(def, LAYOUT.SPAWNS[role]);
-// Floors, stairwells and the building itself come from layout.js, which the server shares.
+// Floors, staircases and the building itself come from layout.js, which the server shares.
 const { FLOOR_Y, FLOOR_NAMES, STAIRS, BOUNDS, WALL_HEIGHT } = LAYOUT;
-const STAIR_RADIUS = 14;
+const GRAVITY = 30;
+const JUMP_SPEED = 10.5;
 const PLAYER_RADIUS = 0.6;
 const CAMERA_PRESETS = LAYOUT.CAMERAS;
 // Third person orbits behind the character; first person looks out of its eyes.
@@ -31,6 +32,8 @@ const state = {
   cameraMode: storedCameraMode === 'first' ? 'first' : 'third', zoom: CAMERA.third.distance, cameraDistance: CAMERA.third.distance,
   // Combat status from the server, converted to local performance.now() deadlines.
   stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, look: null,
+  // Height of the steps underfoot, and how far above them a jump has taken you.
+  ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false,
 };
 const keys = new Set();
 const remoteActors = new Map();
@@ -47,6 +50,7 @@ let lastNetworkUpdate = 0;
 let lastCameraPointer = null;
 let noticeTimer = 0;
 let visibleFloor = -1;
+let visibleFloors = new Set();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1016);
@@ -236,13 +240,25 @@ function healthBar(actor) {
   actor.add(bar); actor.userData.bar = bar;
   return bar;
 }
+const SHIELD_REACH = 0.8;
+function frontMount(actor) {
+  if (!actor.userData.front) {
+    const front = new THREE.Group();
+    front.position.set(0, actor.userData.height * 0.5, SHIELD_REACH);
+    actor.add(front); actor.userData.front = front;
+  }
+  return actor.userData.front;
+}
 // Shows what a character holds and whether it is stunned, knocked out or hurt.
 function applyActorStatus(actor, status) {
   const item = status.equippedItem ?? null;
   if (actor.userData.item !== item) {
     actor.userData.item = item;
     actor.userData.hand.clear();
-    if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
+    actor.userData.front?.clear();
+    // Shields are carried squarely in front of the body; everything else sits in the hand.
+    if (item && ITEMS[item]?.shield) frontMount(actor).add(makeItemModel(item, ITEMS[item].color));
+    else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
   }
   actor.userData.down = Boolean(status.down);
   actor.userData.stars.visible = Boolean(status.stunned) && !status.down;
@@ -274,6 +290,8 @@ function animateActor(actor, dt, baseY) {
   // Holding something keeps the item arm raised a little so the item points forward.
   const holding = data.item ? -0.35 : 0;
   data.arm.rotation.x = attack || (holding + swingAngle * (data.item ? 0.4 : 1) + idle);
+  // A shield bash shoves the shield forward instead of swinging the arm.
+  if (data.front) data.front.position.z = SHIELD_REACH + (data.swing > 0 ? Math.sin((data.swing / 0.3) * Math.PI) * 0.6 : 0);
   if (data.armL) data.armL.rotation.x = -swingAngle - idle;
   if (data.legR) { data.legR.rotation.x = -swingAngle; data.legL.rotation.x = swingAngle; }
   if (data.head) data.head.rotation.y = data.stars.visible ? Math.sin(data.time * 6) * 0.25 : 0;
@@ -290,15 +308,18 @@ function showNotice(message) {
   window.clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => toast.classList.remove('visible'), 1900);
 }
-function showFloor(index) {
-  if (index === visibleFloor) return;
-  visibleFloor = index;
-  floors.forEach((floor, i) => { floor.visible = i === index; });
+// The main floor, plus any floor seen through a staircase next to the player.
+function showFloor(index, extra = []) {
+  const next = new Set([index, ...extra]);
+  if (index === visibleFloor && next.size === visibleFloors.size && [...next].every(i => visibleFloors.has(i))) return;
+  visibleFloor = index; visibleFloors = next;
+  floors.forEach((floor, i) => { floor.visible = next.has(i); });
 }
 function setFloor(index) {
   state.floor = THREE.MathUtils.clamp(index, 0, FLOOR_Y.length - 1);
   if (!state.view) showFloor(state.floor);
-  if (state.actor) state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
+  state.ground = LAYOUT.stairHeight(state.floor, state.x, state.z);
+  if (state.actor) state.actor.position.set(state.x, FLOOR_Y[state.floor] + state.ground, state.z);
   document.getElementById('floorLabel').textContent = `FLOOR · ${FLOOR_NAMES[state.floor]}`;
   updateCamera(1);
 }
@@ -319,6 +340,22 @@ function clearDistance(floor, px, pz, dx, dz, max, margin = 0.35) {
   }
   return best;
 }
+// How far the camera can back away and up from the pivot before it meets a ceiling. Over a staircase
+// opening the ceiling is the next floor's, so the camera can follow you up the steps.
+function ceilingReach(floorY, pivotY, up, across, max) {
+  const low = floorY + WALL_HEIGHT - 0.35;
+  const openings = FLOOR_Y[state.floor + 1] === undefined ? [] : STAIRS.filter(stair => stair.floor === state.floor).map(LAYOUT.stairBody)
+    .filter(box => state.x > box.minX - 12 && state.x < box.maxX + 12 && state.z > box.minZ - 12 && state.z < box.maxZ + 12);
+  if (!openings.length) return (low - pivotY) / up;
+  const high = FLOOR_Y[state.floor + 1] + WALL_HEIGHT - 0.35;
+  const dx = Math.sin(state.yaw) * across, dz = Math.cos(state.yaw) * across;
+  for (let d = 0; d <= max; d += 0.2) {
+    const x = state.x + dx * d, z = state.z + dz * d;
+    const open = openings.some(box => x > box.minX && x < box.maxX && z > box.minZ && z < box.maxZ);
+    if (pivotY + up * d > (open ? high : low)) return Math.max(0, d - 0.2);
+  }
+  return max;
+}
 const lookTarget = new THREE.Vector3();
 function updateCamera(alpha) {
   // Tablet cameras hang under the ceiling in a corner of the room and look across it.
@@ -328,7 +365,7 @@ function updateCamera(alpha) {
     camera.lookAt(view.tx, y + 1, view.tz);
     return;
   }
-  const y = FLOOR_Y[state.floor];
+  const floorY = FLOOR_Y[state.floor], y = floorY + state.ground + state.air;
   const height = state.actor?.userData.height ?? 3;
   const cos = Math.cos(state.pitch), sin = Math.sin(state.pitch);
   if (state.cameraMode === 'first') {
@@ -345,8 +382,8 @@ function updateCamera(alpha) {
   let distance = state.zoom;
   const reach = clearDistance(state.floor, state.x, state.z, Math.sin(state.yaw), Math.cos(state.yaw), distance * across);
   if (across > 0.05) distance = Math.min(distance, reach / across);
-  if (up > 0.01) distance = Math.min(distance, (y + WALL_HEIGHT - 0.35 - pivotY) / up);
-  if (up < -0.01) distance = Math.min(distance, (y + 0.45 - pivotY) / up);
+  if (up > 0.01) distance = Math.min(distance, ceilingReach(floorY, pivotY, up, across, distance));
+  if (up < -0.01) distance = Math.min(distance, (floorY + 0.45 - pivotY) / up);
   distance = Math.max(0.3, distance);
   // Snap in when something blocks the view, ease back out once it is clear.
   state.cameraDistance = distance < state.cameraDistance ? distance : THREE.MathUtils.lerp(state.cameraDistance, distance, alpha);
@@ -363,6 +400,16 @@ function syncViewModel() {
   viewModel.clear();
   viewModel.userData.item = state.equipped;
   if (!state.role || !state.equipped || !ITEMS[state.equipped]) return;
+  if (ITEMS[state.equipped].shield) {
+    // Held up in front of you, centred, covering the lower part of the view.
+    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color);
+    model.rotation.y = Math.PI;
+    model.scale.setScalar(0.7);
+    model.position.set(-VIEW_MODEL_AT.x, -0.45, -0.25);
+    model.traverse(child => { child.castShadow = false; });
+    viewModel.add(model);
+    return;
+  }
   const sleeve = standard(ROLES[state.look || state.role]?.color ?? 0x777777, 0.7);
   const arm = addBox(viewModel, 0.05, -0.16, 0.5, 0.2, 0.2, 0.9, sleeve, { castShadow: false });
   arm.rotation.x = 0.3;
@@ -418,7 +465,7 @@ function sendJoin() {
 }
 function sendPosition() {
   lastNetworkUpdate = performance.now();
-  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw });
+  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw, air: state.air });
 }
 function readableItem(item) {
   return ITEMS[item]?.name ?? item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
@@ -546,7 +593,7 @@ renderCameraPresets();
 function chooseRole(roleKey) {
   const role = ROLES[roleKey]; if (!role) return;
   state.role = roleKey; state.x = role.x; state.z = role.z;
-  Object.assign(state, { look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, slotSignature: null });
+  Object.assign(state, { look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, slotSignature: null, air: 0, vy: 0 });
   state.actor?.parent?.remove(state.actor);
   state.actor = makeCharacter(roleKey); scene.add(state.actor);
   syncViewModel();
@@ -555,7 +602,7 @@ function chooseRole(roleKey) {
   document.getElementById('roleLabel').textContent = `ROLE · ${role.name.toUpperCase()}`;
   document.getElementById('statusLabel').textContent = socket?.connected ? 'NETWORK · CONNECTED' : 'LOCAL · CONNECTING';
   document.getElementById('objectiveText').textContent = roleKey === 'patient' ? 'Reach the ground-floor exit and escape.' : 'Secure the facility and restore containment.';
-  document.getElementById('objectiveHint').textContent = `${role.ability} · Find the stairwell to change floors.`;
+  updateStairHint();
   document.getElementById('joinScreen').classList.add('hidden');
   document.body.classList.add('in-game');
   renderSlots(role.items);
@@ -585,6 +632,8 @@ if (socket) {
     if (Number.isInteger(data.floor)) setFloor(data.floor);
     applySelfState(data);
     if (data.resumed) showNotice('Reconnected · position restored');
+    // The server rolled new staircases since this page loaded; reload to get the same building.
+    if (Number.isFinite(data.layoutSeed) && data.layoutSeed !== LAYOUT.SEED) location.reload();
   });
   socket.on('joinRejected', data => leaveToJoinScreen(data?.reason || 'Could not join. Pick another class.'));
   socket.on('positionCorrection', data => {
@@ -605,7 +654,7 @@ if (socket) {
       if (actor && actor.userData.role !== look) { scene.remove(actor); actor = null; }
       if (!actor) {
         actor = makeCharacter(look); remoteActors.set(person.id, actor); scene.add(actor);
-        actor.position.set(person.x, FLOOR_Y[person.floor] || 0, person.z);
+        actor.position.set(person.x, (FLOOR_Y[person.floor] || 0) + LAYOUT.stairHeight(person.floor, person.x, person.z), person.z);
       }
       actor.userData.target = person;
       applyActorStatus(actor, person);
@@ -630,14 +679,20 @@ if (socket) {
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
-function changeFloor(direction) {
-  if (!state.role) return;
-  const distance = Math.min(...STAIRS.map(stair => Math.hypot(state.x - stair.x, state.z - stair.z)));
-  if (distance > STAIR_RADIUS) { showNotice('Move closer to a stairwell first'); return; }
-  const next = state.floor + direction;
-  if (next < 0 || next >= FLOOR_Y.length) { showNotice(direction > 0 ? 'You are on the top floor' : 'You are on the ground floor'); return; }
-  setFloor(next); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`);
-  if (socket?.connected) sendPosition();
+// Which rooms on this floor hold the stairs up and the openings down.
+function updateStairHint() {
+  const role = ROLES[state.role]; if (!role) return;
+  const unique = list => [...new Set(list)].join(', ');
+  const up = unique(STAIRS.filter(stair => stair.floor === state.floor).map(stair => stair.from));
+  const down = unique(STAIRS.filter(stair => stair.floor + 1 === state.floor).map(stair => stair.to));
+  document.getElementById('objectiveHint').textContent = [role.ability, up && `Stairs up: ${up}`, down && `Stairs down: ${down}`].filter(Boolean).join(' · ');
+}
+function jump() {
+  if (state.role) state.jumpQueued = true;
+}
+function setSprint(on) {
+  state.sprinting = on;
+  sprintButton.classList.toggle('active', on);
 }
 function useAbility() {
   if (!state.role) return;
@@ -649,11 +704,9 @@ window.addEventListener('keydown', event => {
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.repeat) return;
-  if (event.code === 'KeyE') changeFloor(1);
-  if (event.code === 'KeyF') changeFloor(-1);
   if (event.code === 'KeyQ') useAbility();
   if (event.code === 'KeyV' && state.role) setCameraMode(state.cameraMode === 'first' ? 'third' : 'first');
-  if (event.code === 'Space') useItem();
+  if (event.code === 'Space') jump();
   if (/^Digit[1-6]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
 }, { passive: false });
 window.addEventListener('keyup', event => keys.delete(event.code));
@@ -725,10 +778,12 @@ joystickZone.addEventListener('pointermove', event => { if (joystick.active && e
 joystickZone.addEventListener('pointerup', event => { if (event.pointerId === joystick.pointer) resetJoystick(); });
 joystickZone.addEventListener('pointercancel', resetJoystick);
 const sprintButton = document.getElementById('sprintButton');
-sprintButton.addEventListener('pointerdown', event => { event.preventDefault(); keys.add('ShiftLeft'); sprintButton.classList.add('active'); });
-for (const type of ['pointerup','pointercancel','pointerleave']) sprintButton.addEventListener(type, () => { keys.delete('ShiftLeft'); sprintButton.classList.remove('active'); });
-document.getElementById('stairsUpButton').addEventListener('click', () => changeFloor(1));
-document.getElementById('stairsDownButton').addEventListener('click', () => changeFloor(-1));
+// Sprint is a toggle on touch screens, so the other thumb stays free for the camera.
+sprintButton.addEventListener('pointerdown', event => { event.preventDefault(); setSprint(!state.sprinting); });
+document.getElementById('jumpButton').addEventListener('pointerdown', event => { event.preventDefault(); jump(); });
+// Long presses on the controls must not select text or open the callout menu.
+document.addEventListener('contextmenu', event => { if (event.target.closest?.('#mobileControls, #hud, canvas')) event.preventDefault(); });
+document.addEventListener('selectstart', event => { if (!event.target.closest?.('input, textarea')) event.preventDefault(); });
 document.getElementById('abilityButton').addEventListener('click', useAbility);
 document.getElementById('viewButton').addEventListener('click', () => setCameraMode(state.cameraMode === 'first' ? 'third' : 'first'));
 document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
@@ -750,20 +805,36 @@ function animate() {
     // Stunned or knocked-out players cannot move; the server ignores their position updates anyway.
     if (isStunned()) { forward = 0; sideways = 0; }
     const slowed = now < state.slowedUntil, boosted = state.speed > 1 && !slowed;
-    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 14 : 8) * (slowed ? 0.55 : 1) * (boosted ? state.speed : 1);
+    const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting;
+    const speed = (sprinting ? 14 : 8) * (slowed ? 0.55 : 1) * (boosted ? state.speed : 1);
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
     const stepX = (-Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt;
     const stepZ = (-Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt;
-    const nextX = THREE.MathUtils.clamp(state.x + stepX, -BOUNDS.x, BOUNDS.x);
-    if (!blocked(nextX, state.z, state.floor)) state.x = nextX;
-    const nextZ = THREE.MathUtils.clamp(state.z + stepZ, -BOUNDS.z, BOUNDS.z);
-    if (!blocked(state.x, nextZ, state.floor)) state.z = nextZ;
-    state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
+    // Each axis moves separately so you slide along walls; staircases can carry you to another floor.
+    const tryMove = (x, z) => {
+      const step = LAYOUT.stairMove(state.floor, state.x, state.z, x, z);
+      if (!step || blocked(x, z, step.floor)) return;
+      state.x = x; state.z = z; state.ground = step.height;
+      if (step.floor !== state.floor) { setFloor(step.floor); updateStairHint(); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`); }
+    };
+    if (stepX) tryMove(THREE.MathUtils.clamp(state.x + stepX, -BOUNDS.x, BOUNDS.x), state.z);
+    if (stepZ) tryMove(state.x, THREE.MathUtils.clamp(state.z + stepZ, -BOUNDS.z, BOUNDS.z));
+    state.ground = LAYOUT.stairHeight(state.floor, state.x, state.z);
+    // Jumping: a simple arc above whatever is underfoot.
+    if (state.jumpQueued && state.air === 0 && !isStunned()) state.vy = JUMP_SPEED;
+    state.jumpQueued = false;
+    if (state.air > 0 || state.vy > 0) {
+      state.vy -= GRAVITY * dt;
+      state.air = Math.max(0, state.air + state.vy * dt);
+      if (state.air === 0) state.vy = 0;
+    }
+    if (!state.view) showFloor(state.floor, LAYOUT.stairNeighbours(state.floor, state.x, state.z));
+    state.actor.position.set(state.x, FLOOR_Y[state.floor] + state.ground + state.air, state.z);
     state.actor.rotation.y = state.yaw + Math.PI;
     // Your own body is hidden when the camera is inside (or right behind) your head.
     const insideHead = !state.view && (state.cameraMode === 'first' || state.cameraDistance < 1.3);
-    state.actor.visible = visibleFloor === state.floor && !insideHead;
-    animateActor(state.actor, dt, FLOOR_Y[state.floor]);
+    state.actor.visible = visibleFloors.has(state.floor) && !insideHead;
+    animateActor(state.actor, dt, FLOOR_Y[state.floor] + state.ground + state.air);
     updateCamera(1 - Math.exp(-7 * dt));
     animateViewModel(dt);
     const focus = state.view || state;
@@ -779,8 +850,11 @@ function animate() {
     actor.position.x += (target.x - actor.position.x) * smoothing;
     actor.position.z += (target.z - actor.position.z) * smoothing;
     actor.rotation.y = (Number(target.yaw) || 0) + Math.PI;
-    actor.visible = target.floor === visibleFloor;
-    animateActor(actor, dt, FLOOR_Y[target.floor] || 0);
+    actor.visible = visibleFloors.has(target.floor);
+    // Height comes from the steps under the smoothed position, plus the jump the owner reports.
+    const lift = LAYOUT.stairHeight(target.floor, actor.position.x, actor.position.z);
+    actor.userData.air = THREE.MathUtils.lerp(actor.userData.air || 0, Number(target.air) || 0, smoothing);
+    animateActor(actor, dt, (FLOOR_Y[target.floor] || 0) + lift + actor.userData.air);
   }
   effects.update(dt);
   updateBlind(now);

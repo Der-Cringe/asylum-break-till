@@ -1,6 +1,7 @@
 // Building layout shared by the server (require) and the browser (classic script → window.LAYOUT).
 // Three floors of 180 × 132 units: a main corridor runs east–west at z = ±5, a cross corridor
-// north–south at x = ±5, and the stairwells sit in halls at both ends (x = ±78).
+// north–south at x = ±5, and halls sit at both ends (x = ±78). Staircases are placed at random in
+// rooms each time the server starts (see STAIR_SEED below), so the way up changes from game to game.
 // Walls are axis aligned; doors are gaps in them (closed doors are only painted on).
 (function (root) {
   'use strict';
@@ -13,8 +14,6 @@
   const DOOR_HEIGHT = 4.3;
   // Where a player's centre may go: the outer walls' inner faces minus the player radius.
   const BOUNDS = { x: 88.3, z: 64.3 };
-  // Steps run from z = -7 to z = 4 at x = ±78.
-  const STAIRS = [{ x: -78, z: -1.5 }, { x: 78, z: -1.5 }];
 
   const SPAWNS = {
     orderly: { floor: 0, x: 22, z: -12 },
@@ -89,9 +88,7 @@
     room(f, 'Corridor', -5, -65, 5, -5, 'corridor');
     room(f, 'Corridor', -5, 5, 5, 65, 'corridor');
     for (const side of [-1, 1]) {
-      room(f, 'Stairwell', side * 68, -14, side * 89, 10, 'stairs');
-      put(f, 'stairs', side * 78, -1.5);
-      sign(f, `STAIRS · ${FLOOR_NAMES[f]}`, side * 68 + side * 0.35, 7.5, side > 0 ? '-x' : '+x', '#6dd9e7');
+      room(f, side > 0 ? 'East Hall' : 'West Hall', side * 68, -14, side * 89, 10, 'stairs');
       put(f, 'plant', side * 86, 7.5); put(f, 'plant', side * 86, -11.5);
       put(f, 'bench', side * 87.6, -1.5, 1, { w: 6 });
     }
@@ -384,7 +381,7 @@
     vending: [2.4, 1.8], fridge: [2.6, 1.8], stove: [3.4, 2.4], washer: [2.6, 2.4], treadmill: [2.4, 5], benchPress: [2.4, 5],
     weightRack: [6, 1.4], rack: [null, 1.4], generator: [5, 4], serverRack: [3, 2.2], tank: [3, 3], pillar: [2.4, 2.4],
     shower: [5, 2.4], sink: [2.4, 1.4], toiletStall: [6, 6], fileCabinet: [3, 1.6], pingPong: [6, 3.4], crate: [2.4, 2.4],
-    sterilizer: [3, 2], toilet: [1.2, 1.6], cellDoor: [0.2, 3.2], electricBox: [2.4, 0.8], whiteboard: null, tv: null, stairs: [4.6, 12.4],
+    sterilizer: [3, 2], toilet: [1.2, 1.6], cellDoor: [0.2, 3.2], electricBox: [2.4, 0.8], whiteboard: null, tv: null,
     laundryCart: [2.4, 3], medCart: [2, 3], monitorCart: [1.8, 1.8], wheelchair: [2, 2.4], easel: [2, 2], plant: [1.2, 1.2],
   };
   function footprint(item) {
@@ -414,9 +411,159 @@
       : { minX: w.x1 - half, maxX: w.x1 + half, minZ: a, maxZ: b }));
   }
   const wallBoxes = walls.map(list => list.flatMap(wallPieces));
+
+  // ---- Staircases ---------------------------------------------------------------------------
+  // Each staircase climbs from its floor to the one above, straight along one axis: `dir` is the
+  // way up in quarter turns (0 = +z, 1 = +x, 2 = -z, 3 = -x). In stair space s runs from the bottom
+  // step (0) to the top (STAIR.run) and t across it. The floor above has a railed hole over it, open
+  // at the top end where the steps arrive.
+  const STAIR = { run: 12, width: 4, rail: 0.3, entry: 1.5, steps: 20 };
+  const STAIRS_PER_FLOOR = 3;
+  const DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  // The server picks the seed when it starts and hands it to browsers via /layout-seed.js.
+  const SEED = (Number(root.STAIR_SEED) >>> 0) || 1;
+  function random(seed) {
+    // mulberry32: small, fast and identical on the server and in every browser.
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let r = Math.imul(a ^ (a >>> 15), 1 | a);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function stairLocal(stair, x, z) {
+    const [ax, az] = DIRS[stair.dir], dx = x - stair.x, dz = z - stair.z;
+    return { s: dx * ax + dz * az + STAIR.run / 2, t: dx * az - dz * ax };
+  }
+  // Axis-aligned box covering s1..s2 along the stair and t1..t2 across it.
+  function stairBox(stair, s1, s2, t1, t2) {
+    const [ax, az] = DIRS[stair.dir];
+    const xs = [], zs = [];
+    for (const s of [s1, s2]) for (const t of [t1, t2]) {
+      xs.push(stair.x + ax * (s - STAIR.run / 2) + az * t);
+      zs.push(stair.z + az * (s - STAIR.run / 2) - ax * t);
+    }
+    return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+  }
+  const halfWide = STAIR.width / 2 + STAIR.rail;
+  const stairBody = stair => stairBox(stair, 0, STAIR.run, -halfWide, halfWide);
+  const onTread = l => l.s >= 0 && l.s <= STAIR.run && Math.abs(l.t) <= STAIR.width / 2;
+  const rise = stair => FLOOR_Y[stair.floor + 1] - FLOOR_Y[stair.floor];
+
+  const overlaps = (a, b, margin = 0) => a.maxX + margin > b.minX && a.minX - margin < b.maxX && a.maxZ + margin > b.minZ && a.minZ - margin < b.maxZ;
+  const within = (box, r, margin) => box.minX >= r.x1 + margin && box.maxX <= r.x2 - margin && box.minZ >= r.z1 + margin && box.maxZ <= r.z2 - margin;
+  const blockers = furniture.map((list, floor) => [
+    ...wallBoxes[floor],
+    ...list.filter(item => item.type !== 'rug' && item.type !== 'mat').map(footprint).filter(Boolean),
+  ]);
+  // Doorways, spawns and loot need room around them so a staircase never cuts anything off.
+  const keepClear = FLOOR_Y.map((_, floor) => [
+    ...walls[floor].flatMap(w => w.doors.map(door => (w.z1 === w.z2 ? { x: door.at, z: w.z1 } : { x: w.x1, z: door.at }))),
+    ...Object.values(SPAWNS).filter(spawn => spawn.floor === floor),
+    ...PICKUPS.filter(spot => spot.floor === floor),
+  ]);
+  const roomOf = (floor, box) => rooms[floor].find(r => r.style !== 'corridor' && within(box, r, 0.4));
+  const STAIRS = [];
+  {
+    const rand = random(SEED);
+    const taken = FLOOR_Y.map(() => []); // boxes already claimed by stairs, holes and their landings
+    const fits = (floor, box, extra = []) => !blockers[floor].some(b => overlaps(box, b, 0.3))
+      && !taken[floor].some(b => overlaps(box, b, 1))
+      && !keepClear[floor].some(p => p.x > box.minX - 3 && p.x < box.maxX + 3 && p.z > box.minZ - 3 && p.z < box.maxZ + 3)
+      && extra.every(Boolean);
+    for (let floor = 0; floor < FLOOR_Y.length - 1; floor++) {
+      const candidates = rooms[floor].filter(r => !['corridor', 'cell', 'padded'].includes(r.style));
+      // Shuffle the rooms, then try a handful of random spots and directions in each.
+      for (let i = candidates.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [candidates[i], candidates[j]] = [candidates[j], candidates[i]]; }
+      let placed = 0;
+      for (const r of candidates) {
+        if (placed >= STAIRS_PER_FLOOR) break;
+        for (let attempt = 0; attempt < 40; attempt++) {
+          const stair = {
+            floor, dir: Math.floor(rand() * 4),
+            x: Math.round((r.x1 + rand() * (r.x2 - r.x1)) * 2) / 2,
+            z: Math.round((r.z1 + rand() * (r.z2 - r.z1)) * 2) / 2,
+          };
+          const body = stairBody(stair);
+          const foot = stairBox(stair, -3.5, 0, -STAIR.width / 2, STAIR.width / 2);
+          const landing = stairBox(stair, STAIR.run, STAIR.run + 3.5, -STAIR.width / 2, STAIR.width / 2);
+          const bottomRoom = roomOf(floor, body), topRoom = roomOf(floor + 1, body);
+          if (bottomRoom !== r || !topRoom || !roomOf(floor, foot) || !roomOf(floor + 1, landing)) continue;
+          if (!fits(floor, body) || !fits(floor, foot) || !fits(floor + 1, body) || !fits(floor + 1, landing)) continue;
+          stair.from = bottomRoom.name; stair.to = topRoom.name;
+          STAIRS.push(stair);
+          taken[floor].push(body, foot);
+          taken[floor + 1].push(body, landing);
+          placed++;
+          break;
+        }
+      }
+      // Should the dice ever leave a floor without a way up, fall back to the halls at both ends.
+      if (!placed) {
+        for (const side of [-1, 1]) {
+          const stair = { floor, dir: 0, x: side * 78, z: -1.5, from: side > 0 ? 'East Hall' : 'West Hall', to: side > 0 ? 'East Hall' : 'West Hall' };
+          STAIRS.push(stair); taken[floor].push(stairBody(stair)); taken[floor + 1].push(stairBody(stair));
+        }
+      }
+    }
+  }
+  // Side rails on the steps, and a railing around three sides of the hole on the floor above.
+  const stairRails = FLOOR_Y.map(() => []);
+  for (const stair of STAIRS) {
+    const w = STAIR.width / 2, r = STAIR.rail;
+    const sides = [stairBox(stair, 0, STAIR.run, w, w + r), stairBox(stair, 0, STAIR.run, -w - r, -w)];
+    stairRails[stair.floor].push(...sides);
+    stairRails[stair.floor + 1].push(...sides, stairBox(stair, -r, 0, -w - r, w + r));
+  }
+
+  // Where moving from (x0, z0) to (x1, z1) on `floor` takes you: { floor, height } with the height of
+  // the steps underfoot, or null when the way is barred. Steps are entered at the bottom from below
+  // and at the top from the floor above; walking off the top end arrives on the next floor.
+  function stairMove(floor, x0, z0, x1, z1) {
+    for (const stair of STAIRS) {
+      if (stair.floor === floor) {
+        const a = stairLocal(stair, x0, z0), b = stairLocal(stair, x1, z1);
+        const was = onTread(a), now = onTread(b);
+        if (was && !now) {
+          if (b.s > STAIR.run) return { floor: floor + 1, height: 0 };
+          if (b.s < 0) return { floor, height: 0 };
+          return null;
+        }
+        if (now) return !was && b.s > STAIR.entry ? null : { floor, height: (b.s / STAIR.run) * rise(stair) };
+      } else if (stair.floor + 1 === floor) {
+        const b = stairLocal(stair, x1, z1);
+        if (onTread(b)) return b.s < STAIR.run - STAIR.entry ? null : { floor: stair.floor, height: (b.s / STAIR.run) * rise(stair) };
+      }
+    }
+    return { floor, height: 0 };
+  }
+  // Height of the steps under (x, z) on `floor`, 0 when not on a staircase.
+  function stairHeight(floor, x, z) {
+    for (const stair of STAIRS) {
+      if (stair.floor !== floor) continue;
+      const l = stairLocal(stair, x, z);
+      if (onTread(l)) return (l.s / STAIR.run) * rise(stair);
+    }
+    return 0;
+  }
+  // The floors a player at (x, z) on `floor` can look into through a nearby staircase.
+  function stairNeighbours(floor, x, z, margin = 8) {
+    const found = [];
+    for (const stair of STAIRS) {
+      if (stair.floor !== floor && stair.floor + 1 !== floor) continue;
+      const body = stairBody(stair);
+      if (x > body.minX - margin && x < body.maxX + margin && z > body.minZ - margin && z < body.maxZ + margin) {
+        found.push(stair.floor === floor ? floor + 1 : stair.floor);
+      }
+    }
+    return found;
+  }
+
   const solids = furniture.map((list, floor) => [
     ...wallBoxes[floor].map(box => ({ ...box, tall: true })),
     ...list.filter(item => !WALK_THROUGH.has(item.type)).map(footprint).filter(Boolean),
+    ...stairRails[floor],
   ]);
 
   // Does the segment from (x1, z1) to (x2, z2) pass through a wall? Used by the server for line of
@@ -439,7 +586,8 @@
   }
 
   const LAYOUT = {
-    FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, STAIRS,
+    FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, SEED, STAIR, STAIRS,
+    stairBox, stairBody, stairLocal, stairMove, stairHeight, stairNeighbours,
     SPAWNS, LOOT, PICKUPS, CAMERAS, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
   };
   if (typeof module === 'object' && module.exports) module.exports = LAYOUT;

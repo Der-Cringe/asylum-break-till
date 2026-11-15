@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07111d" />
   <title>Asylum Break — Containment Breach</title>
   <link rel="stylesheet" href="./style.css?v=20261115-1" />
-  <link rel="stylesheet" href="./ui-fixes.css?v=20261115-1" />
+  <link rel="stylesheet" href="./ui-fixes.css?v=20261115-2" />
   <link rel="stylesheet" href="./items.css?v=20261115-5" />
 </head>
 <body>
@@ -23,11 +23,11 @@
     <div id="statusEffect" aria-live="polite"></div>
     <div id="damageFlash" aria-hidden="true"></div>
     <div id="inventoryPanel"><div class="panel-heading"><strong>LOADOUT</strong><span>Tap or press 1–6</span></div><div id="equipmentSlots"></div></div>
-    <div id="helpPanel"><strong>FIELD MANUAL</strong><br />WASD / arrows · move<br />Shift · sprint<br />Drag · look around<br />E / F · stairs up / down<br />Click / Space · use item<br />1–6 · pick item<br />Walk over loot to grab it<br />Q · class ability<br />V · first / third person<br />Wheel · zoom</div>
+    <div id="helpPanel"><strong>FIELD MANUAL</strong><br />WASD / arrows · move<br />Shift · sprint<br />Drag · look around<br />Space · jump<br />Walk up the stairs to change floors<br />Click · use item<br />1–6 · pick item<br />Walk over loot to grab it<br />Q · class ability<br />V · first / third person<br />Wheel · zoom</div>
   </div>
   <div id="mobileControls" aria-label="Touch controls">
     <div id="joystickZone" aria-label="Move joystick"><div id="movePad"><div id="moveStick"></div></div></div>
-    <div id="mobileActions"><button id="useButton" class="mobileAction use-button" type="button">USE</button><button id="sprintButton" class="mobileAction" type="button">SPRINT</button><button id="stairsUpButton" class="mobileAction" type="button" aria-label="Stairs up">▲ UP</button><button id="stairsDownButton" class="mobileAction" type="button" aria-label="Stairs down">▼ DOWN</button><button id="abilityButton" class="mobileAction" type="button">ABILITY</button><button id="viewButton" class="mobileAction" type="button" aria-label="Switch first or third person">3RD</button><button id="fullscreenButton" class="mobileAction" type="button" aria-label="Toggle fullscreen">⛶</button></div>
+    <div id="mobileActions"><button id="useButton" class="mobileAction use-button" type="button">USE</button><button id="sprintButton" class="mobileAction" type="button">SPRINT</button><button id="jumpButton" class="mobileAction" type="button">JUMP</button><button id="abilityButton" class="mobileAction" type="button">ABILITY</button><button id="viewButton" class="mobileAction" type="button" aria-label="Switch first or third person">3RD</button><button id="fullscreenButton" class="mobileAction" type="button" aria-label="Toggle fullscreen">⛶</button></div>
   </div>
   <div id="tabletPanel" class="tablet-panel hidden" aria-label="Tablet camera presets"><strong>TABLET CAMERAS</strong><div id="cameraPresets"></div></div>
   <main id="joinScreen">
@@ -69,8 +69,9 @@
   </script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/" } }</script>
-  <script src="./items.js?v=20261115-4"></script>
-  <script src="./layout.js?v=20261115-2"></script>
-  <script type="module" src="./game.js?v=20261115-7"></script>
+  <script src="./items.js?v=20261115-5"></script>
+  <script src="./layout-seed.js"></script>
+  <script src="./layout.js?v=20261115-3"></script>
+  <script type="module" src="./game.js?v=20261115-8"></script>
 </body>
 </html>

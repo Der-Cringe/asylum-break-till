@@ -35,3 +35,7 @@ canvas{touch-action:none}
   #joinScreen .roleButton .role-meta small{font-size:9px}
   #joinScreen .join-footer{gap:10px;flex-wrap:wrap;font-size:8px}
 }
+
+/* Holding a touch control (sprint, jump, the joystick) must never start a text selection or the callout menu. */
+body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+input,textarea{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
