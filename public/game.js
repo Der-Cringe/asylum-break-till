@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-3';
-import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-1';
+import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior } from './interior.js?v=20261115-2';
 
 const ITEMS = window.ITEMS || {};

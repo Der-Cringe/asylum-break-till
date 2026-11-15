@@ -9,9 +9,10 @@
 </head>
 <body>
 <script type="module">
-  // Shows all four character models from the front under the game's lighting. ?spin=1 rotates them.
+  // Shows all four character models from the front under the game's lighting. ?spin=1 rotates them,
+  // ?head=<role> moves the camera in on that character's face.
   import * as THREE from 'three';
-  import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-1';
+  import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth, innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -22,15 +23,18 @@
   const floor = new THREE.Mesh(new THREE.BoxGeometry(14, 0.2, 5), new THREE.MeshStandardMaterial({ color: 0x929da2, roughness: 0.92 }));
   floor.position.y = -0.1; scene.add(floor);
   const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 100);
-  camera.position.set(0, 2.2, 11); camera.lookAt(0, 1.5, 0);
+  const params = new URLSearchParams(location.search);
   const order = ['orderly', 'medic', 'director', 'patient'];
+  const close = order.indexOf(params.get('head'));
+  if (close >= 0) { const x = (close - 1.5) * 2.6; camera.position.set(x, 2.85, 2.6); camera.lookAt(x, 2.8, 0); }
+  else { camera.position.set(0, 2.2, 11); camera.lookAt(0, 1.5, 0); }
   const actors = [];
   loadCharacterModels(role => {
     const model = buildCharacterModel(role);
     model.root.position.x = (order.indexOf(role) - 1.5) * 2.6;
     scene.add(model.root); actors.push(model);
   });
-  const spin = new URLSearchParams(location.search).has('spin');
+  const spin = params.has('spin');
   renderer.setAnimationLoop(t => {
     for (const a of actors) if (spin) a.root.rotation.y = t / 1500;
     renderer.render(scene, camera);

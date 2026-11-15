@@ -11,13 +11,15 @@ const materials = new Map();
 export function loadCharacterModels(onLoaded) {
   const loader = new GLTFLoader();
   for (const role of ROLES) {
-    loader.load(`./assets/characters/${role}.glb?v=20261115-1`, gltf => {
+    loader.load(`./assets/characters/${role}.glb?v=20261115-2`, gltf => {
       const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.02 });
       materials.set(role, material);
       gltf.scene.traverse(child => {
         if (!child.isMesh) return;
-        // Light strips and visors keep their emissive glow material; everything else is vertex painted.
-        if (child.material.name !== 'Glow') child.material = material;
+        // Light strips keep their emissive glow material and the face keeps its texture (times the vertex
+        // colours, which hold the baked occlusion); everything else is vertex painted.
+        if (child.material.name === 'Face') child.material.roughness = material.roughness;
+        else if (child.material.name !== 'Glow') child.material = material;
         child.castShadow = true;
         child.receiveShadow = true;
       });

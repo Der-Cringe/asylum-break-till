@@ -1,11 +1,15 @@
-# Usage: blender -b --python build.py -- <decimated.blend> <role> <out.glb>
+# Usage: blender -b --python build.py -- <decimated.blend> <role> <out.glb> <source.stl>
 # Cuts a fused T-pose block character into six rigid parts with pivots, removes everything that is not
-# part of the body (held items, drones, auras), paints vertex colours and exports a glTF binary.
-import bpy, bmesh, sys, math
+# part of the body (held items, drones, auras), paints vertex colours, paints the face from the full-resolution
+# source (face_map.py) and exports a glTF binary.
+import bpy, bmesh, sys, os, math
 from mathutils import Vector
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True
+import face_map
 
 argv = sys.argv[sys.argv.index('--') + 1:]
-src, role, out = argv
+src, role, out, stl = argv
 INF = 9
 
 # Measurements in the source model's units (Z up, character faces -Y, arms along X).
@@ -91,7 +95,25 @@ PAL = {
     'orderly': dict(skin=0xf0c8ab, hair=0x111522, shirt=0x161d33, shirt2=0x1c2643, pants=0x121829, shoe=0x0b0d12, glove=0x0d0f15, glow=0x3fd0ff),
 }[role]
 P = {k: rgb(v) for k, v in PAL.items()}
+INK = (0.16, 0.09, 0.07)
+WHITE = (0.96, 0.95, 0.93)
 head_h = h['top'] - neck
+
+# Face texture settings: where the skin flood starts, how wide the face block is, and fills for the shapes
+# the line art closes off, as (x, z) points inside them (read off the source sculpt from the front).
+FACE = {
+    'patient': dict(seed=(0, 0.69), face_x=0.095, fills=[((-0.042, 0.727), INK, 0.0072), ((0.041, 0.728), INK, 0.0072)]),  # pupils
+    'medic': dict(seed=(0, 0.71), face_x=0.10, fills=[
+        ((-0.058, 0.765), WHITE), ((0.058, 0.765), WHITE),                 # eye whites
+        ((-0.041, 0.768), rgb(0x6b3b2a)), ((0.041, 0.768), rgb(0x6b3b2a)),  # irises
+        ((-0.070, 0.783), INK), ((0.070, 0.783), INK)]),                   # lashes
+    'director': dict(seed=(0.06, 0.665), face_x=0.108, fills=[
+        ((-0.058, 0.7405), WHITE), ((0.053, 0.7366), WHITE),
+        ((-0.041, 0.7452), INK), ((0.041, 0.7452), INK),                   # pupils
+        ((-0.005, 0.69), rgb(0x4a1c1f))]),                                 # open smirk
+    'orderly': dict(seed=(0, 0.74), face_x=0.10, fills=[
+        ((-0.04, 0.8067), P['hair']), ((-0.032, 0.7883), INK), ((0.013, 0.7267), INK)]),  # brow, eye, mouth
+}[role]
 
 # Skin on the head is found by flooding outwards from the middle of the face across smooth surface.
 # Hair strands meet the skin at sharp creases, which stop the flood, so fringes stay hair coloured.
@@ -112,29 +134,15 @@ def face_skin(part_bm):
                 skin.add(g); stack.append(g)
     return skin
 
-# Engraved features (eyes, mouth, glasses) are sharp dents in the face: a face whose normal differs a lot
-# from its immediate neighbours. Gentle curves like cheeks or the rounded block edges stay skin.
-def face_ink(skin):
-    limit = math.cos(math.radians(24))
-    ink = set()
-    for f in skin:
-        ring = {g for v in f.verts for g in v.link_faces if g is not f}
-        if not ring: continue
-        mean = sum((g.normal * g.calc_area() for g in ring), Vector()).normalized()
-        if f.normal.dot(mean) < limit: ink.add(f)
-    return ink
-
-def colour(part, p, n, is_skin=False, is_ink=False):
+def colour(part, p, n, is_skin=False):
     if part == 'Head':
         rel = (p.z - neck) / head_h
         if role == 'orderly':
             if p.z > 0.828: return P['hair']                                 # beret
-            if -0.005 < p.x < 0.09 and 0.775 < p.z < 0.826 and p.y < -0.06: return P['glow']  # visor
+            if -0.005 < p.x < 0.09 and 0.770 < p.z < 0.815 and p.y < -0.06: return P['glow']  # visor
             if p.x > 0.06 and p.z < 0.80 and p.y < -0.05: return P['hair']   # headset mic
-            if is_ink: return (0.16, 0.09, 0.07)
             return P['skin']
-        if not is_skin: return P['hair']
-        return P.get('ink', (0.16, 0.09, 0.07)) if is_ink else P['skin']
+        return P['skin'] if is_skin else P['hair']
     if part in ('ArmR', 'ArmL'):
         reach = (abs(p.x) - tw) / (C['tip'] - tw)
         if reach > 0.86: return P.get('glove', P['skin'])
@@ -159,6 +167,19 @@ def colour(part, p, n, is_skin=False, is_ink=False):
     if role == 'patient' and p.z < hip + 0.035: return P['shirt2']                 # hoodie hem
     return P['shirt']
 
+def face_colour(x, y, z):
+    c = colour('Head', Vector((x, y, z)), None)
+    # In front of the orderly's face everything that is not skin is gear (headset, visor frame): dark.
+    return P['hair'] if c == P['skin'] else c
+
+face_image, face_glow, face_surface, face_uv = face_map.build(stl, (FACE['face_x'], h['top']), FACE['seed'], neck, face_colour,
+                                                               P['skin'], INK, FACE['fills'], P.get('glow'))
+# Pull the decimated face onto the smooth surface under the engravings, so it shades without shards.
+for v in bm.verts:
+    if v.co.z <= neck or abs(v.co.x) >= FACE['face_x']: continue
+    y = face_surface(v.co.x, v.co.z)
+    if y is not None and y - 0.003 < v.co.y < y + 0.03: v.co.y = y
+
 # ---- Build part objects ------------------------------------------------------------------------
 arm_t = a1 - a0
 PIVOTS = {
@@ -180,6 +201,19 @@ gb = glow.node_tree.nodes['Principled BSDF']
 gb.inputs['Base Color'].default_value = (*[c ** 2.2 for c in P.get('glow', (1, 1, 1))], 1)
 gb.inputs['Emission Color'].default_value = (*[c ** 2.2 for c in P.get('glow', (1, 1, 1))], 1)
 gb.inputs['Emission Strength'].default_value = 2.5
+
+# The front of the head carries the face texture; its vertex colours stay white apart from the baked occlusion.
+face_mat = bpy.data.materials.new('Face')
+face_mat.use_nodes = True
+tex = face_mat.node_tree.nodes.new('ShaderNodeTexImage'); tex.image = face_image; tex.interpolation = 'Linear'
+fb = face_mat.node_tree.nodes['Principled BSDF']
+face_mat.node_tree.links.new(tex.outputs['Color'], fb.inputs['Base Color'])
+fb.inputs['Roughness'].default_value = 0.8
+if face_glow:
+    # The orderly's visor lies in the face texture, so its glow comes from a matching emissive image.
+    gt = face_mat.node_tree.nodes.new('ShaderNodeTexImage'); gt.image = face_glow
+    face_mat.node_tree.links.new(gt.outputs['Color'], fb.inputs['Emission Color'])
+    fb.inputs['Emission Strength'].default_value = 2.5
 root = bpy.data.objects.new(f'{role}', None); bpy.context.scene.collection.objects.link(root)
 stats = {}
 for name, _ in PARTS:
@@ -219,19 +253,27 @@ for name, _ in PARTS:
     layer = part.loops.layers.color.new('Col')
     part.normal_update()
     skin = face_skin(part) if name == 'Head' else set()
-    ink = face_ink(skin)
-    glow_faces = []
+    uv_layer = part.loops.layers.uv.new('UV')
+    glow_faces, face_faces = [], []
     for f in part.faces:
-        c = colour(name, f.calc_center_median(), f.normal, f in skin, f in ink)
-        if 'glow' in P and c == P['glow']: glow_faces.append(f.index)
+        p = f.calc_center_median()
+        # Inside the face outline (nose sides, steep cheek edges) the source sculpt says skin, whatever the flood found.
+        surface = face_surface(p.x, p.z) if name == 'Head' else None
+        c = colour(name, p, f.normal, f in skin or (surface is not None and p.y < surface + 0.03))
+        if name == 'Head' and f.normal.y < -0.5 and abs(p.x) < FACE['face_x'] and p.z > neck + 0.002:
+            face_faces.append(f.index); c = (1, 1, 1)
+            for loop in f.loops: loop[uv_layer].uv = face_uv(loop.vert.co.x, loop.vert.co.z)
+        elif 'glow' in P and c == P['glow']: glow_faces.append(f.index)
         for loop in f.loops: loop[layer] = (*c, 1.0)
     pivot = PIVOTS[name]
     for v in part.verts: v.co = (v.co - pivot) * SCALE
     me = bpy.data.meshes.new(name); part.to_mesh(me); part.free()
     me.materials.append(mat)
-    if glow_faces:
-        me.materials.append(glow)
-        for i in glow_faces: me.polygons[i].material_index = 1
+    for extra, faces in ((glow, glow_faces), (face_mat, face_faces)):
+        if not faces: continue
+        me.materials.append(extra)
+        for i in faces: me.polygons[i].material_index = len(me.materials) - 1
+    if not face_faces: me.uv_layers.remove(me.uv_layers['UV'])
     ob = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(ob)
     ob.location = pivot * SCALE; ob.parent = root
     stats[name] = len(me.polygons)
