@@ -55,7 +55,8 @@
     flashGrenade: {
       name: 'Flash Grenade', kind: 'throw', team: 'staff', color: 0x4d8ed8, uses: 2,
       throwRange: 13, flight: 0.7, fuse: 1, cooldown: 1,
-      effect: { type: 'flash', radius: 5.5, stun: 3 },
+      // Blinds everyone in the radius (the thrower's team too), but only stuns enemies.
+      effect: { type: 'flash', radius: 5.5, stun: 3, blind: 4 },
     },
     arrestCuffs: {
       name: 'Arrest Cuffs', kind: 'arrest', team: 'staff', color: 0xb9c3cc,

@@ -11,3 +11,5 @@
 @keyframes damage-flash{from{opacity:1}to{opacity:0}}
 .mobileAction.use-button{position:absolute;right:0;bottom:calc(100% + 12px);min-width:76px;min-height:76px;border-radius:50%;background:rgba(170,52,40,.85);border-color:rgba(255,160,140,.6);font-size:12px;font-weight:800}
 @media (max-width:560px){#statusEffect{top:auto;bottom:200px}}
+/* Flash grenade: covers the whole screen, HUD included, then fades. Opacity is driven from game.js. */
+#flashBlind{position:fixed;inset:0;z-index:90;pointer-events:none;background:radial-gradient(circle at center,#fff 0%,#fff 55%,#f2f7ff 100%);opacity:0}

@@ -7,7 +7,7 @@
   <title>Asylum Break — Containment Breach</title>
   <link rel="stylesheet" href="./style.css?v=20261115-1" />
   <link rel="stylesheet" href="./ui-fixes.css?v=20261115-1" />
-  <link rel="stylesheet" href="./items.css?v=20261115-2" />
+  <link rel="stylesheet" href="./items.css?v=20261115-4" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen" aria-live="polite">
@@ -45,6 +45,7 @@
       <footer class="join-footer"><span><i></i> FACILITY NETWORK READY</span><span id="joinMessage" role="status">SELECT A CLASS TO DEPLOY</span><a href="./map.html">MAP CONCEPT</a></footer>
     </section>
   </main>
+  <div id="flashBlind" aria-hidden="true"></div>
   <div id="crosshair" aria-hidden="true"><i></i><b></b></div>
   <script>
     // Keep an import or WebGL failure from trapping the player behind the boot screen.
@@ -68,7 +69,7 @@
   </script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/" } }</script>
-  <script src="./items.js?v=20261115-2"></script>
-  <script type="module" src="./game.js?v=20261115-3"></script>
+  <script src="./items.js?v=20261115-4"></script>
+  <script type="module" src="./game.js?v=20261115-4"></script>
 </body>
 </html>

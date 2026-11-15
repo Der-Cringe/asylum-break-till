@@ -186,6 +186,18 @@ function syncPickups(list) {
   }
   for (const [key, group] of pickupMeshes) if (!present.has(key)) { group.parent?.remove(group); pickupMeshes.delete(key); }
 }
+// Full white for the first part of the flash, then a slow fade back to normal sight.
+function updateBlind(now) {
+  const overlay = document.getElementById('flashBlind');
+  if (!state.blindUntil || now >= state.blindUntil) {
+    if (overlay.style.opacity !== '0') overlay.style.opacity = '0';
+    state.blindStrength = 0;
+    return;
+  }
+  const progress = (now - state.blindStart) / (state.blindUntil - state.blindStart);
+  const fade = progress < 0.35 ? 1 : 1 - (progress - 0.35) / 0.65;
+  overlay.style.opacity = String(state.blindStrength * fade * fade);
+}
 function flashDamage() {
   const overlay = document.getElementById('damageFlash');
   overlay.classList.remove('visible'); void overlay.offsetWidth; overlay.classList.add('visible');
@@ -548,6 +560,15 @@ if (socket) {
     effects.handle(data);
     if (data.type === 'hit' && data.floor === state.floor && Math.hypot(data.x - state.x, data.z - state.z) < 0.5) flashDamage();
   });
+  socket.on('blinded', data => {
+    const duration = Number(data?.duration) * 1000;
+    if (!(duration > 0)) return;
+    const now = performance.now();
+    // A second flash while still blinded extends the effect instead of restarting it dimmer.
+    state.blindStart = now;
+    state.blindUntil = Math.max(state.blindUntil || 0, now + duration);
+    state.blindStrength = Math.min(1, Math.max(Number(data.strength) || 1, state.blindStrength || 0));
+  });
   socket.on('pickups', list => { if (Array.isArray(list)) syncPickups(list); });
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
@@ -680,6 +701,7 @@ function animate() {
     animateActor(actor, dt, FLOOR_Y[target.floor] || 0);
   }
   effects.update(dt);
+  updateBlind(now);
   for (const group of pickupMeshes.values()) {
     group.userData.model.rotation.y += dt * 1.6;
     group.userData.model.position.y = 1 + Math.sin(now / 400 + group.position.x) * 0.15;

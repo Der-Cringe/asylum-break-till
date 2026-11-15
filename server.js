@@ -218,11 +218,14 @@ function detonate(owner, floor, x, z, fx) {
     return;
   }
   for (const target of players.values()) {
-    if (target.floor !== floor || !hostile(owner, target)) continue;
+    if (target.floor !== floor) continue;
     const distance = Math.hypot(target.x - x, target.z - z);
     if (distance > fx.radius) continue;
     if (blockedByShield(target, x, z)) { effect({ type: 'block', x: target.x, z: target.z, floor }); continue; }
     const closeness = 1 - distance / fx.radius;
+    // A flash is bright for everyone standing in it, whichever side threw it.
+    if (fx.blind) io.to(target.id).emit('blinded', { duration: fx.blind * (0.4 + closeness * 0.6), strength: 0.75 + closeness * 0.25 });
+    if (!hostile(owner, target)) continue;
     if (fx.maxDamage) damage(target, Math.round(fx.minDamage + (fx.maxDamage - fx.minDamage) * closeness), owner);
     if (fx.stun) stun(target, fx.stun * (0.5 + closeness * 0.5));
   }
