@@ -6,7 +6,8 @@ A browser-based 3D multiplayer prototype inspired by a prison-asylum escape game
 - 3D scene with multiple floor levels
 - Role selection: Patient, Medic, Orderly, Director
 - Per-role spawn locations
-- Keycard and Director-only door behavior
+- Stairwells between floors (E / ▲ up, F / ▼ down) and simple collision with beds, lab walls and tables
+- Director tablet with camera views (equip the tablet, slot 3)
 - Multiplayer support through Socket.IO
 - Browser playable on desktop and mobile Safari
 
@@ -26,15 +27,20 @@ A browser-based 3D multiplayer prototype inspired by a prison-asylum escape game
 2. Create a new Render Web Service pointing to this repo.
 3. Set the build command to:
    ```bash
-   npm install
+   npm ci
    ```
 4. Set the start command to:
    ```bash
    npm start
    ```
-5. Deploy. Your site will be live with the game client and Socket.IO multiplayer server.
+5. Optional: set the health check path to `/health`.
+6. Deploy. Your site will be live with the game client and Socket.IO multiplayer server.
+
+Note: on Render's free plan the service sleeps when idle (first visit takes ~30 s) and all game state lives in memory, so it resets on every restart or deploy.
 
 ## Current prototype notes
 - This is a playable foundation, not a full game balance pass.
-- Doors are visualized in the scene and the role logic hooks are in place.
+- The server validates movement (no teleporting, floor changes only at stairwells), limits the game to one Director and rate-limits events.
+- Players who briefly lose connection get their position back for 60 seconds.
+- `map.html` is a separate map concept page, not part of the playable game.
 - You can expand specific mechanics like arresting players, stun states, and true keycard locks later.

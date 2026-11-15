@@ -2,26 +2,46 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.m
 
 const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
-  orderly: { name: 'Orderly', color: 0x2878d0, floor: 2, x: 70, z: 0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs'], ability: 'Containment' },
-  medic: { name: 'Medic', color: 0x35b987, floor: 2, x: -70, z: 0, items: ['smallMedicalKit', 'mediumMedicalKit'], ability: 'Field treatment' },
-  director: { name: 'Facility Director', color: 0x9670d5, floor: 1, x: 70, z: 43, items: ['stunBaton', 'ignotusShield', 'tablet'], ability: 'Override access' },
-  patient: { name: 'Patient', color: 0xc85953, floor: 3, x: -72, z: 8, items: ['glassShard'], ability: 'Adrenaline' },
+  orderly: { name: 'Orderly', color: 0x2878d0, floor: 2, x: 70, z: 0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs'], ability: 'Containment', maxHealth: 115 },
+  medic: { name: 'Medic', color: 0x35b987, floor: 2, x: -70, z: 0, items: ['smallMedicalKit', 'mediumMedicalKit'], ability: 'Field treatment', maxHealth: 100 },
+  director: { name: 'Facility Director', color: 0x9670d5, floor: 1, x: 70, z: 43, items: ['stunBaton', 'ignotusShield', 'tablet'], ability: 'Override access', maxHealth: 100 },
+  patient: { name: 'Patient', color: 0xc85953, floor: 3, x: -72, z: 8, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
 };
 const FLOOR_Y = [0, 9, 18, 27];
 const FLOOR_NAMES = ['GROUND', 'U1', 'U2', 'U3'];
-const state = { role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: 0.34, actor: null, health: 100 };
+// Stairwells sit at x = ±78, steps run from z = -7 to z = 4. Keep in sync with server.js.
+const STAIRS = [{ x: -78, z: -1.5 }, { x: 78, z: -1.5 }];
+const STAIR_RADIUS = 14;
+const PLAYER_RADIUS = 0.6;
+const CAMERA_PRESETS = [
+  { label: 'Research', floor: 1, x: -42, z: -30, yaw: -0.8, pitch: 0.5 },
+  { label: 'Medical', floor: 2, x: 38, z: 30, yaw: 1.2, pitch: 0.45 },
+  { label: 'Ward', floor: 3, x: -18, z: 56, yaw: 2.5, pitch: 0.42 },
+  { label: 'Exit', floor: 0, x: 0, z: -40, yaw: 0.5, pitch: 0.55 },
+];
+const state = { role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: 0.34, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null };
 const keys = new Set();
 const remoteActors = new Map();
 const joystick = { active: false, pointer: null, x: 0, y: 0 };
+const sessionToken = (() => {
+  const create = () => (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  try {
+    const stored = sessionStorage.getItem('asylumSession') || create();
+    sessionStorage.setItem('asylumSession', stored);
+    return stored;
+  } catch (_) { return create(); }
+})();
 let lastNetworkUpdate = 0;
 let lastCameraPointer = null;
 let noticeTimer = 0;
+let visibleFloor = -1;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101923);
 scene.fog = new THREE.Fog(0x101923, 90, 245);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 500);
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const isTouch = window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -33,7 +53,7 @@ scene.add(new THREE.HemisphereLight(0xdcecff, 0x35404b, 1.6));
 const keyLight = new THREE.DirectionalLight(0xffe6c1, 2.15);
 keyLight.position.set(-38, 70, 32);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1536, 1536);
+keyLight.shadow.mapSize.setScalar(isTouch ? 1024 : 1536);
 Object.assign(keyLight.shadow.camera, { left: -105, right: 105, top: 105, bottom: -105, near: 0.5, far: 220 });
 keyLight.shadow.bias = -0.00015;
 scene.add(keyLight);
@@ -41,15 +61,26 @@ const blueFill = new THREE.PointLight(0x438de3, 75, 110, 2);
 blueFill.position.set(0, 18, 0);
 scene.add(blueFill);
 
-const standard = (color, roughness = 0.8, metalness = 0.03) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
+// One shared unit box and cached materials: every box is just a scaled mesh, so characters that
+// leave the game do not leak GPU buffers and the map does not allocate hundreds of geometries.
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+const materialCache = new Map();
+function standard(color, roughness = 0.8, metalness = 0.03) {
+  const key = `${color}|${roughness}|${metalness}`;
+  if (!materialCache.has(key)) materialCache.set(key, new THREE.MeshStandardMaterial({ color, roughness, metalness }));
+  return materialCache.get(key);
+}
 const floors = [];
+const colliders = FLOOR_Y.map(() => []);
 function addBox(parent, x, y, z, w, h, d, materialOrColor, options = {}) {
   const material = materialOrColor?.isMaterial ? materialOrColor : standard(materialOrColor, options.roughness, options.metalness);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+  const mesh = new THREE.Mesh(UNIT_BOX, material);
   mesh.position.set(x, y, z);
-  mesh.castShadow = true;
+  mesh.scale.set(w, h, d);
+  mesh.castShadow = options.castShadow ?? true;
   mesh.receiveShadow = true;
   parent.add(mesh);
+  if (options.solidOn !== undefined) colliders[options.solidOn].push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
   return mesh;
 }
 function addSign(parent, text, x, y, z, tint = '#51d6e8') {
@@ -62,17 +93,18 @@ function addSign(parent, text, x, y, z, tint = '#51d6e8') {
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(14, 2.6), new THREE.MeshBasicMaterial({ map: texture }));
   sign.position.set(x, y, z); parent.add(sign);
 }
+const ceilingLightMaterial = new THREE.MeshStandardMaterial({ color: 0x93d8e2, emissive: 0x1d7b91, emissiveIntensity: 1.2, roughness: 0.35 });
+const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x80d3df, transparent: true, opacity: 0.38, roughness: 0.2 });
 function addCeilingLights(parent, y) {
-  for (const z of [-46, -15, 16, 47]) {
-    addBox(parent, 0, y + 6.72, z, 17, 0.12, 1.1, new THREE.MeshStandardMaterial({ color: 0x93d8e2, emissive: 0x1d7b91, emissiveIntensity: 1.2, roughness: 0.35 }));
-  }
+  for (const z of [-46, -15, 16, 47]) addBox(parent, 0, y + 6.72, z, 17, 0.12, 1.1, ceilingLightMaterial, { castShadow: false });
 }
 function buildFloor(index) {
   const y = FLOOR_Y[index]; const group = new THREE.Group(); floors[index] = group; scene.add(group);
   const lab = index === 1; const ward = index === 3;
   const groundMaterial = standard(lab ? 0x52606a : ward ? 0xb9c2c2 : 0x929da2, 0.92);
   const wallMaterial = standard(lab ? 0x303b47 : 0xd1d2cc, 0.86);
-  addBox(group, 0, y - 0.3, 0, 180, 0.6, 132, groundMaterial);
+  const solid = { solidOn: index };
+  addBox(group, 0, y - 0.3, 0, 180, 0.6, 132, groundMaterial, { castShadow: false });
   addBox(group, 0, y + 3.4, -65.5, 180, 6.8, 1, wallMaterial);
   addBox(group, 0, y + 3.4, 65.5, 180, 6.8, 1, wallMaterial);
   addBox(group, -89.5, y + 3.4, 0, 1, 6.8, 132, wallMaterial);
@@ -81,24 +113,24 @@ function buildFloor(index) {
 
   const bedFrame = standard(0x415464, 0.58, 0.22);
   for (const z of [-45, -27, -9, 9, 27, 45]) for (const x of [-68, -54, 54, 68]) {
-    addBox(group, x, y + 0.43, z, 5.3, 0.24, 2.5, bedFrame);
+    addBox(group, x, y + 0.43, z, 5.3, 0.24, 2.5, bedFrame, solid);
     addBox(group, x, y + 0.64, z, 5.0, 0.2, 2.2, lab ? 0x8db6bc : 0xdfe7e7);
     addBox(group, x - 1.4, y + 0.79, z, 2.4, 0.08, 1.6, 0xf1f3eb);
   }
   for (const side of [-1, 1]) {
     for (let i = 0; i < 10; i++) addBox(group, side * 78, y + 0.16 + i * 0.36, -7 + i * 1.25, 4, 0.22, 1.2, 0x5e6a75);
-    addSign(group, 'STAIRS · E', side * 78, y + 4.8, -16, '#6dd9e7');
+    addSign(group, 'STAIRS · E ▲  F ▼', side * 78, y + 4.8, -16, '#6dd9e7');
   }
   if (lab) {
     for (const side of [-1, 1]) for (const x of [-60, -20, 20, 60]) {
-      addBox(group, x, y + 1.45, side * 37, 28, 2.9, 0.8, 0x424e5b);
-      addBox(group, x, y + 3.35, side * 37, 25, 1.0, 0.16, new THREE.MeshStandardMaterial({ color: 0x80d3df, transparent: true, opacity: 0.38, roughness: 0.2 }));
-      addBox(group, x, y + 0.7, side * 49, 11, 1.4, 3, 0x766956);
+      addBox(group, x, y + 1.45, side * 37, 28, 2.9, 0.8, 0x424e5b, solid);
+      addBox(group, x, y + 3.35, side * 37, 25, 1.0, 0.16, glassMaterial);
+      addBox(group, x, y + 0.7, side * 49, 11, 1.4, 3, 0x766956, solid);
       addBox(group, x, y + 1.45, side * 49, 9, 0.14, 2.6, 0x4aa8b0);
     }
     addSign(group, 'RESEARCH DIVISION · RESTRICTED', 0, y + 5.5, -63, '#b39aff');
   } else if (ward) {
-    addBox(group, -18, y + 1.1, 56, 14, 2.1, 5, 0x765d46);
+    addBox(group, -18, y + 1.1, 56, 14, 2.1, 5, 0x765d46, solid);
     addBox(group, -18, y + 2.22, 56, 12, 0.14, 3.8, 0x45b6c5);
     addSign(group, 'PATIENT WARD · RECOVERY', 0, y + 5.5, -63, '#70dbaf');
   } else {
@@ -107,6 +139,10 @@ function buildFloor(index) {
   group.visible = false;
 }
 for (let i = 0; i < FLOOR_Y.length; i++) buildFloor(i);
+
+function blocked(x, z, floor) {
+  return colliders[floor].some(box => x + PLAYER_RADIUS > box.minX && x - PLAYER_RADIUS < box.maxX && z + PLAYER_RADIUS > box.minZ && z - PLAYER_RADIUS < box.maxZ);
+}
 
 function makeCharacter(roleKey) {
   const role = ROLES[roleKey] || ROLES.patient;
@@ -129,7 +165,7 @@ function makeCharacter(roleKey) {
   addPart(0, 1.68, 0.33, 0.56, 0.14, 0.07, roleKey === 'director' ? 0xf4c45f : 0xdcebf3);
   if (roleKey === 'orderly') {
     addPart(0, 2.65, 0.45, 0.62, 0.14, 0.06, 0x168fd0);
-    addPart(1.0, 0.95, 0.17, 0.13, 1.1, 0x91a7b6);
+    addPart(1.0, 0.95, 0.17, 0.13, 1.1, 0.13, 0x91a7b6);
     addPart(-0.78, 1.94, 0, 0.52, 0.28, 0.68, dark);
     addPart(0.78, 1.94, 0, 0.52, 0.28, 0.68, dark);
   } else if (roleKey === 'medic') {
@@ -153,51 +189,106 @@ function showNotice(message) {
   window.clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => toast.classList.remove('visible'), 1900);
 }
+function showFloor(index) {
+  if (index === visibleFloor) return;
+  visibleFloor = index;
+  floors.forEach((floor, i) => { floor.visible = i === index; });
+}
 function setFloor(index) {
   state.floor = THREE.MathUtils.clamp(index, 0, FLOOR_Y.length - 1);
-  floors.forEach((floor, i) => { floor.visible = i === state.floor; });
+  if (!state.view) showFloor(state.floor);
   if (state.actor) state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
   document.getElementById('floorLabel').textContent = `FLOOR · ${FLOOR_NAMES[state.floor]}`;
   updateCamera(1);
 }
+const cameraTarget = new THREE.Vector3();
 function updateCamera(alpha) {
-  const target = new THREE.Vector3(state.x + Math.sin(state.yaw) * 14, FLOOR_Y[state.floor] + 9.5 + state.pitch * 3, state.z + Math.cos(state.yaw) * 14);
-  camera.position.lerp(target, alpha);
-  camera.lookAt(state.x, FLOOR_Y[state.floor] + 1.45, state.z);
+  const view = state.view || state;
+  // Tablet cameras hang higher and further back to overlook a whole room.
+  const distance = state.view ? 30 : 14, height = state.view ? 20 : 9.5;
+  cameraTarget.set(view.x + Math.sin(view.yaw) * distance, FLOOR_Y[view.floor] + height + view.pitch * 3, view.z + Math.cos(view.yaw) * distance);
+  camera.position.lerp(cameraTarget, alpha);
+  camera.lookAt(view.x, FLOOR_Y[view.floor] + 1.45, view.z);
 }
-function setHealth(value) {
-  state.health = THREE.MathUtils.clamp(Number(value) || 0, 0, 100);
-  document.getElementById('healthText').textContent = `${Math.round(state.health)} / 100`;
-  document.getElementById('healthFill').style.width = `${state.health}%`;
+function setHealth(value, max = state.maxHealth) {
+  state.maxHealth = max;
+  state.health = THREE.MathUtils.clamp(Number(value) || 0, 0, max);
+  document.getElementById('healthText').textContent = `${Math.round(state.health)} / ${max}`;
+  document.getElementById('healthFill').style.width = `${(state.health / max) * 100}%`;
 }
 function sendJoin() {
   if (!socket || !socket.connected || !state.role) return;
-  socket.emit('joinGame', { role: state.role, name: document.getElementById('playerName').value.trim() || 'Player' });
+  socket.emit('joinGame', { role: state.role, name: document.getElementById('playerName').value.trim() || 'Player', session: sessionToken });
 }
+function sendPosition() {
+  lastNetworkUpdate = performance.now();
+  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw });
+}
+function readableItem(item) {
+  return item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
+}
+function selectItem(item) {
+  state.equipped = item;
+  document.querySelectorAll('.equipment-slot').forEach(el => el.classList.toggle('selected', el.dataset.item === item));
+  document.getElementById('tabletPanel').classList.toggle('hidden', item !== 'tablet');
+  if (item !== 'tablet') setView(null);
+}
+function renderSlots(items) {
+  state.items = items;
+  const slots = document.getElementById('equipmentSlots'); slots.replaceChildren();
+  items.forEach((item, index) => {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'equipment-slot'; button.dataset.item = item;
+    const number = document.createElement('span'); number.className = 'slot-number'; number.textContent = String(index + 1);
+    button.append(number, readableItem(item));
+    button.addEventListener('click', () => { selectItem(item); socket?.emit('equipItem', { item }); });
+    slots.appendChild(button);
+  });
+}
+function setView(preset) {
+  state.view = preset;
+  document.querySelectorAll('.camera-preset').forEach(el => el.classList.toggle('active', el.dataset.label === preset?.label));
+  showFloor(preset ? preset.floor : state.floor);
+  updateCamera(1);
+}
+function renderCameraPresets() {
+  const host = document.getElementById('cameraPresets');
+  host.replaceChildren();
+  for (const preset of [...CAMERA_PRESETS, null]) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'camera-preset';
+    button.dataset.label = preset?.label ?? 'live';
+    button.textContent = preset?.label ?? 'Live';
+    button.addEventListener('click', () => setView(preset));
+    host.appendChild(button);
+  }
+}
+renderCameraPresets();
+
 function chooseRole(roleKey) {
   const role = ROLES[roleKey]; if (!role) return;
   state.role = roleKey; state.x = role.x; state.z = role.z;
   state.actor?.parent?.remove(state.actor);
   state.actor = makeCharacter(roleKey); scene.add(state.actor);
+  setView(null);
   setFloor(role.floor);
   document.getElementById('roleLabel').textContent = `ROLE · ${role.name.toUpperCase()}`;
   document.getElementById('statusLabel').textContent = socket?.connected ? 'NETWORK · CONNECTED' : 'LOCAL · CONNECTING';
   document.getElementById('objectiveText').textContent = roleKey === 'patient' ? 'Reach the ground-floor exit and escape.' : 'Secure the facility and restore containment.';
   document.getElementById('objectiveHint').textContent = `${role.ability} · Find the stairwell to change floors.`;
   document.getElementById('joinScreen').classList.add('hidden');
-  const slots = document.getElementById('equipmentSlots'); slots.replaceChildren();
-  role.items.forEach((item, index) => {
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'equipment-slot';
-    const readable = item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
-    button.innerHTML = `<span class="slot-number">${index + 1}</span>${readable}`;
-    button.addEventListener('click', () => {
-      slots.querySelectorAll('.equipment-slot').forEach(el => el.classList.remove('selected'));
-      button.classList.add('selected'); socket?.emit('equipItem', { item });
-    });
-    slots.appendChild(button);
-  });
-  setHealth(100);
+  document.body.classList.add('in-game');
+  renderSlots(role.items);
+  selectItem(null);
+  setHealth(role.maxHealth, role.maxHealth);
   sendJoin();
+}
+function leaveToJoinScreen(message) {
+  state.role = null;
+  state.actor?.parent?.remove(state.actor); state.actor = null;
+  selectItem(null);
+  document.getElementById('roleLabel').textContent = 'ROLE · NONE';
+  document.getElementById('joinMessage').textContent = message;
+  document.getElementById('joinScreen').classList.remove('hidden');
+  document.body.classList.remove('in-game');
 }
 document.querySelectorAll('.roleButton').forEach(button => button.addEventListener('click', () => chooseRole(button.dataset.role)));
 
@@ -210,33 +301,57 @@ if (socket) {
     if (Number.isFinite(data.x)) state.x = data.x;
     if (Number.isFinite(data.z)) state.z = data.z;
     if (Number.isInteger(data.floor)) setFloor(data.floor);
+    if (Number.isFinite(data.health) && Number.isFinite(data.maxHealth)) setHealth(data.health, data.maxHealth);
+    if (Array.isArray(data.inventory)) renderSlots(data.inventory.filter(item => typeof item === 'string'));
+    selectItem(data.equippedItem ?? null);
+    if (data.resumed) showNotice('Reconnected · position restored');
+  });
+  socket.on('joinRejected', data => leaveToJoinScreen(data?.reason || 'Could not join. Pick another class.'));
+  socket.on('positionCorrection', data => {
+    if (!data || !Number.isFinite(data.x) || !Number.isFinite(data.z)) return;
+    state.x = data.x; state.z = data.z;
+    if (Number.isInteger(data.floor) && data.floor !== state.floor) setFloor(data.floor);
   });
   socket.on('playersState', list => {
-    const present = new Set(list.map(p => p.id));
+    if (!Array.isArray(list)) return;
+    const present = new Set(list.map(p => p?.id));
+    // Geometry and materials are shared, so removing the group is enough to free a character.
     for (const [id, actor] of remoteActors) if (!present.has(id)) { scene.remove(actor); remoteActors.delete(id); }
     for (const person of list) {
-      if (person.id === state.id) continue;
+      if (!person || person.id === state.id || !Number.isInteger(person.floor)) continue;
       let actor = remoteActors.get(person.id);
-      if (!actor) { actor = makeCharacter(person.role); remoteActors.set(person.id, actor); scene.add(actor); }
-      actor.position.set(person.x, FLOOR_Y[person.floor] || 0, person.z); actor.visible = person.floor === state.floor;
+      if (!actor) {
+        actor = makeCharacter(person.role); remoteActors.set(person.id, actor); scene.add(actor);
+        actor.position.set(person.x, FLOOR_Y[person.floor] || 0, person.z);
+      }
+      actor.userData.target = person;
     }
   });
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
-function changeFloor() {
+function changeFloor(direction) {
   if (!state.role) return;
-  const distance = Math.min(Math.hypot(state.x - 78, state.z + 10), Math.hypot(state.x + 78, state.z + 10));
-  if (distance > 16) { showNotice('Move closer to a stairwell first'); return; }
-  if (state.floor >= 3) { showNotice('You are on the top floor'); return; }
-  setFloor(state.floor + 1); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`);
+  const distance = Math.min(...STAIRS.map(stair => Math.hypot(state.x - stair.x, state.z - stair.z)));
+  if (distance > STAIR_RADIUS) { showNotice('Move closer to a stairwell first'); return; }
+  const next = state.floor + direction;
+  if (next < 0 || next >= FLOOR_Y.length) { showNotice(direction > 0 ? 'You are on the top floor' : 'You are on the ground floor'); return; }
+  setFloor(next); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`);
+  if (socket?.connected) sendPosition();
+}
+function useAbility() {
+  if (!state.role) return;
+  const ability = ROLES[state.role].ability;
+  if (socket?.connected) socket.emit('useAbility', { ability }); else showNotice(`${ability} activated`);
 }
 window.addEventListener('keydown', event => {
+  if (event.target.closest?.('input, textarea, select')) return;
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.repeat) return;
-  if (event.code === 'KeyE') changeFloor();
-  if (event.code === 'KeyQ' && state.role) { socket?.emit('useAbility', { ability: ROLES[state.role].ability }); if (!socket?.connected) showNotice(`${ROLES[state.role].ability} activated`); }
+  if (event.code === 'KeyE') changeFloor(1);
+  if (event.code === 'KeyF') changeFloor(-1);
+  if (event.code === 'KeyQ') useAbility();
   if (/^Digit[1-4]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
 }, { passive: false });
 window.addEventListener('keyup', event => keys.delete(event.code));
@@ -254,8 +369,9 @@ renderer.domElement.addEventListener('pointermove', event => {
   state.pitch = THREE.MathUtils.clamp(state.pitch - dy * 0.004, -0.25, 0.8);
   lastCameraPointer.x = event.clientX; lastCameraPointer.y = event.clientY;
 });
-renderer.domElement.addEventListener('pointerup', () => { lastCameraPointer = null; });
-renderer.domElement.addEventListener('pointercancel', () => { lastCameraPointer = null; });
+for (const type of ['pointerup', 'pointercancel']) {
+  renderer.domElement.addEventListener(type, event => { if (event.pointerId === lastCameraPointer?.id) lastCameraPointer = null; });
+}
 
 const joystickZone = document.getElementById('joystickZone');
 const pad = document.getElementById('movePad');
@@ -274,8 +390,9 @@ function moveJoystick(clientX, clientY) {
 }
 joystickZone.addEventListener('pointerdown', event => {
   event.preventDefault(); joystick.active = true; joystick.pointer = event.pointerId;
-  const rect = joystickZone.getBoundingClientRect(); const cx = rect.left + Math.min(rect.width * 0.38, 145); const cy = rect.bottom - Math.min(rect.height * 0.38, 145);
-  pad.style.left = `${cx - 68}px`; pad.style.top = `${cy - 68}px`; pad.classList.add('visible');
+  // The pad is centred (translate -50%) on the touch point, in coordinates relative to the zone.
+  const rect = joystickZone.getBoundingClientRect();
+  pad.style.left = `${event.clientX - rect.left}px`; pad.style.top = `${event.clientY - rect.top}px`; pad.classList.add('visible');
   joystickZone.setPointerCapture?.(event.pointerId); moveJoystick(event.clientX, event.clientY);
 });
 joystickZone.addEventListener('pointermove', event => { if (joystick.active && event.pointerId === joystick.pointer) moveJoystick(event.clientX, event.clientY); });
@@ -284,14 +401,13 @@ joystickZone.addEventListener('pointercancel', resetJoystick);
 const sprintButton = document.getElementById('sprintButton');
 sprintButton.addEventListener('pointerdown', event => { event.preventDefault(); keys.add('ShiftLeft'); sprintButton.classList.add('active'); });
 for (const type of ['pointerup','pointercancel','pointerleave']) sprintButton.addEventListener(type, () => { keys.delete('ShiftLeft'); sprintButton.classList.remove('active'); });
-document.getElementById('interactButton').addEventListener('click', changeFloor);
-document.getElementById('abilityButton').addEventListener('click', () => {
-  if (!state.role) return; socket?.emit('useAbility', { ability: ROLES[state.role].ability }); showNotice(`${ROLES[state.role].ability} ready`);
-});
+document.getElementById('stairsUpButton').addEventListener('click', () => changeFloor(1));
+document.getElementById('stairsDownButton').addEventListener('click', () => changeFloor(-1));
+document.getElementById('abilityButton').addEventListener('click', useAbility);
 document.getElementById('fullscreenButton').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); } catch (_) { showNotice('Fullscreen is unavailable in this browser'); }
 });
-if (window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window) document.body.classList.add('touch-device');
+if (isTouch) document.body.classList.add('touch-device');
 
 const clock = new THREE.Clock();
 function animate() {
@@ -303,22 +419,38 @@ function animate() {
     if (joystick.active) { forward = -joystick.y; sideways = joystick.x; }
     const length = Math.hypot(forward, sideways); if (length > 1) { forward /= length; sideways /= length; }
     const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 14 : 8;
-    state.x = THREE.MathUtils.clamp(state.x + (Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt, -86, 86);
-    state.z = THREE.MathUtils.clamp(state.z + (Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt, -62, 62);
+    // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
+    const stepX = (-Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt;
+    const stepZ = (-Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt;
+    const nextX = THREE.MathUtils.clamp(state.x + stepX, -86, 86);
+    if (!blocked(nextX, state.z, state.floor)) state.x = nextX;
+    const nextZ = THREE.MathUtils.clamp(state.z + stepZ, -62, 62);
+    if (!blocked(state.x, nextZ, state.floor)) state.z = nextZ;
     state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
     state.actor.rotation.y = state.yaw + Math.PI;
+    state.actor.visible = visibleFloor === state.floor;
     updateCamera(1 - Math.exp(-7 * dt));
-    const now = performance.now();
-    if (socket?.connected && now - lastNetworkUpdate > 100) {
-      lastNetworkUpdate = now;
-      socket.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor });
-    }
+    if (socket?.connected && performance.now() - lastNetworkUpdate > 100) sendPosition();
+  }
+  // Remote players glide towards their last reported position instead of jumping every tick.
+  const smoothing = 1 - Math.exp(-12 * dt);
+  for (const actor of remoteActors.values()) {
+    const target = actor.userData.target; if (!target) continue;
+    actor.position.x += (target.x - actor.position.x) * smoothing;
+    actor.position.z += (target.z - actor.position.z) * smoothing;
+    actor.position.y = FLOOR_Y[target.floor] || 0;
+    actor.rotation.y = (Number(target.yaw) || 0) + Math.PI;
+    actor.visible = target.floor === visibleFloor;
   }
   renderer.render(scene, camera);
 }
 setFloor(0);
 animate();
-window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  renderer.setSize(innerWidth, innerHeight);
+});
 window.addEventListener('load', () => {
   const loading = document.getElementById('loadingScreen');
   document.getElementById('loadingStatus').textContent = 'Facility online';
