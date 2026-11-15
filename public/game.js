@@ -399,7 +399,7 @@ function setCameraMode(mode, announce = true) {
   const button = document.getElementById('viewButton');
   if (button) button.textContent = mode === 'first' ? '1ST' : '3RD';
   try { localStorage.setItem('asylumCameraMode', mode); } catch (_) {}
-  if (changed && announce && state.role) showNotice(mode === 'first' ? `First person${canPointerLock ? ' · click to aim' : ''}` : 'Third person');
+  if (changed && announce && state.role) showNotice(mode === 'first' ? `First person${canPointerLock ? ' · click locks the mouse, Esc frees it' : ''}` : 'Third person');
 }
 function turnCamera(dx, dy) {
   const config = CAMERA[state.cameraMode];
@@ -663,11 +663,13 @@ renderer.domElement.addEventListener('pointerdown', event => {
   if (event.target.closest?.('button')) return;
   // With the mouse captured in first person, clicking uses the held item.
   if (pointerLocked()) { if (event.button === 0) useItem(); return; }
-  // The first click in first person captures the mouse instead of using the item. Dragging still
-  // turns the camera in case the browser refuses the capture.
-  const capture = canPointerLock && event.pointerType === 'mouse' && state.cameraMode === 'first' && state.role && !state.view;
-  if (capture) renderer.domElement.requestPointerLock()?.catch?.(() => {});
-  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: 0, mouse: !capture && event.pointerType === 'mouse' && event.button === 0 };
+  // In first person a click also captures the mouse. The click still uses the item, so nothing is lost
+  // when the browser refuses the capture (right after Esc, or in embedded browsers); dragging then
+  // keeps turning the camera.
+  if (canPointerLock && event.pointerType === 'mouse' && state.cameraMode === 'first' && state.role && !state.view) {
+    try { renderer.domElement.requestPointerLock()?.catch?.(() => {}); } catch (_) { /* Not allowed here. */ }
+  }
+  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: 0, mouse: event.pointerType === 'mouse' && event.button === 0 };
   try { renderer.domElement.setPointerCapture?.(event.pointerId); } catch (_) { /* Pointer lock already took the mouse. */ }
 });
 renderer.domElement.addEventListener('pointermove', event => {
