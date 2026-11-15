@@ -21,6 +21,19 @@ All item stats live in `public/items.js`, which both the server and the browser 
 - **Arrest:** staff can cuff a stunned or knocked-out patient, who goes back to the ward and is held for 8 s.
 - The server decides every hit; the browser only shows what happened.
 
+## Characters
+The four role models live in `public/assets/characters/*.glb` (about 0.2–0.5 MB each). They are built with Blender from the source STL sculpts by the scripts in `tools/character-pipeline`:
+
+1. `prepare.py` imports an STL and decimates it (the sources are ~2 million triangles).
+2. `build.py` cuts the T-pose figure into head, torso, arms and legs with their joints as pivots, drops everything that is not body (held items, the drone, the patient's aura), paints the colours from the role artwork and exports a GLB. Colours and body measurements per role are at the top of the script.
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender -b --python tools/character-pipeline/prepare.py -- "source.stl" out/patient
+/Applications/Blender.app/Contents/MacOS/Blender -b --python tools/character-pipeline/build.py -- out/patient.blend patient public/assets/characters/patient.glb
+```
+
+`public/characters.js` loads the models and builds the posable rig; the walk, attack, stunned and knocked-out poses are animated in `animateActor` in `game.js`. `character-preview.html` shows all four side by side (`?spin=1` rotates them). Until a model has loaded, the old blocky figure stands in. The STL sources are not committed (`*.stl` is ignored).
+
 ## Run locally
 1. Install dependencies:
    ```bash

@@ -1,4 +1,4 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
+import * as THREE from 'three';
 
 // Blocky item models and short-lived combat effects. Everything is built from one shared unit box,
 // like the map and the characters, so the look stays consistent and nothing needs asset files.

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Character Preview</title>
+  <style>html,body{margin:0;height:100%;background:#101923;overflow:hidden}canvas{display:block}</style>
+  <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/" } }</script>
+</head>
+<body>
+<script type="module">
+  // Shows all four character models from the front under the game's lighting. ?spin=1 rotates them.
+  import * as THREE from 'three';
+  import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-1';
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth, innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x101923);
+  scene.add(new THREE.HemisphereLight(0xdcecff, 0x35404b, 1.6));
+  const key = new THREE.DirectionalLight(0xffe6c1, 2.15); key.position.set(-38, 70, 32); scene.add(key);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(14, 0.2, 5), new THREE.MeshStandardMaterial({ color: 0x929da2, roughness: 0.92 }));
+  floor.position.y = -0.1; scene.add(floor);
+  const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 100);
+  camera.position.set(0, 2.2, 11); camera.lookAt(0, 1.5, 0);
+  const order = ['orderly', 'medic', 'director', 'patient'];
+  const actors = [];
+  loadCharacterModels(role => {
+    const model = buildCharacterModel(role);
+    model.root.position.x = (order.indexOf(role) - 1.5) * 2.6;
+    scene.add(model.root); actors.push(model);
+  });
+  const spin = new URLSearchParams(location.search).has('spin');
+  renderer.setAnimationLoop(t => {
+    for (const a of actors) if (spin) a.root.rotation.y = t / 1500;
+    renderer.render(scene, camera);
+  });
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-2';
+import * as THREE from 'three';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-3';
+import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-1';
 
 const ITEMS = window.ITEMS || {};
 
@@ -147,6 +148,22 @@ function buildFloor(index) {
 }
 for (let i = 0; i < FLOOR_Y.length; i++) buildFloor(i);
 
+// Swap the blocky stand-ins for the real models as soon as each one has loaded.
+loadCharacterModels(role => {
+  if (state.actor && (state.look || state.role) === role) {
+    const old = state.actor;
+    state.actor = makeCharacter(role); scene.add(state.actor); scene.remove(old);
+    applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown() });
+  }
+  for (const [id, actor] of remoteActors) {
+    if (actor.userData.role !== role) continue;
+    const next = makeCharacter(role);
+    next.position.copy(actor.position);
+    next.userData.target = actor.userData.target;
+    scene.remove(actor); scene.add(next); remoteActors.set(id, next);
+    if (next.userData.target) applyActorStatus(next, next.userData.target);
+  }
+});
 const effects = new EffectLayer({ floors, floorY: FLOOR_Y, actorFor: id => (id === state.id ? state.actor : remoteActors.get(id)) });
 // Loot lying around the map: a slowly spinning item over a glowing ring. Walk over it to pick it up.
 const pickupMeshes = new Map();
@@ -179,6 +196,23 @@ function blocked(x, z, floor) {
 }
 
 function makeCharacter(roleKey) {
+  const model = buildCharacterModel(roleKey);
+  const root = model ? model.root : makeBlockCharacter(roleKey);
+  if (model) Object.assign(root.userData, model);
+  root.userData.role = roleKey;
+  root.userData.height ??= 3.2;
+  root.rotation.order = 'YXZ'; // Knocked-out characters tip over relative to where they face.
+  // Spinning stars over the head while stunned.
+  const stars = new THREE.Group(); stars.position.y = root.userData.height + 0.4; stars.visible = false; root.add(stars);
+  for (let i = 0; i < 3; i++) {
+    const angle = (i / 3) * Math.PI * 2;
+    addBox(stars, Math.cos(angle) * 0.6, 0, Math.sin(angle) * 0.6, 0.2, 0.2, 0.2, starMaterial, { castShadow: false });
+  }
+  root.userData.stars = stars;
+  return root;
+}
+// Blocky stand-in, used until the role's 3D model has loaded (or if it fails to load).
+function makeBlockCharacter(roleKey) {
   const role = ROLES[roleKey] || ROLES.patient;
   const root = new THREE.Group();
   const uniform = standard(role.color, 0.58, 0.08);
@@ -195,8 +229,7 @@ function makeCharacter(roleKey) {
   const arm = new THREE.Group(); arm.position.set(0.77, 1.97, 0); root.add(arm);
   addBox(arm, 0, -0.53, 0, 0.37, 1.06, 0.42, uniform);
   const hand = new THREE.Group(); hand.position.set(0, -1.0, 0.12); arm.add(hand);
-  root.userData.arm = arm; root.userData.hand = hand; root.userData.role = roleKey;
-  root.rotation.order = 'YXZ'; // Knocked-out characters tip over relative to where they face.
+  root.userData.arm = arm; root.userData.hand = hand;
   addPart(0, 2.62, 0.02, 0.82, 0.82, 0.74, skin);
   addPart(0, 3.07, -0.01, 0.86, 0.22, 0.78, roleKey === 'medic' ? 0x7d463c : 0x1b2532);
   addPart(-0.18, 2.65, 0.4, 0.085, 0.09, 0.045, 0x101820);
@@ -204,7 +237,6 @@ function makeCharacter(roleKey) {
   addPart(0, 1.68, 0.33, 0.56, 0.14, 0.07, roleKey === 'director' ? 0xf4c45f : 0xdcebf3);
   if (roleKey === 'orderly') {
     addPart(0, 2.65, 0.45, 0.62, 0.14, 0.06, 0x168fd0);
-    addPart(1.0, 0.95, 0.17, 0.13, 1.1, 0.13, 0x91a7b6);
     addPart(-0.78, 1.94, 0, 0.52, 0.28, 0.68, dark);
     addPart(0.78, 1.94, 0, 0.52, 0.28, 0.68, dark);
   } else if (roleKey === 'medic') {
@@ -215,16 +247,8 @@ function makeCharacter(roleKey) {
     addPart(0, 3.15, 0.02, 0.96, 0.08, 0.85, 0xd5a94d);
     addPart(0.25, 2.03, 0.37, 0.28, 0.13, 0.05, 0xf2c35d);
   } else if (roleKey === 'patient') {
-    addPart(0.86, 1.2, 0.16, 0.09, 0.72, 0.12, 0xe9edf0);
     addPart(-0.36, 1.7, 0.31, 0.25, 0.08, 0.05, 0xb96851);
   }
-  // Spinning stars over the head while stunned.
-  const stars = new THREE.Group(); stars.position.y = 3.6; stars.visible = false; root.add(stars);
-  for (let i = 0; i < 3; i++) {
-    const angle = (i / 3) * Math.PI * 2;
-    addBox(stars, Math.cos(angle) * 0.6, 0, Math.sin(angle) * 0.6, 0.2, 0.2, 0.2, starMaterial, { castShadow: false });
-  }
-  root.userData.stars = stars;
   return root;
 }
 const starMaterial = new THREE.MeshBasicMaterial({ color: 0xffe066 });
@@ -235,7 +259,7 @@ const BAR_PLANE = new THREE.PlaneGeometry(1, 1);
 // Floating health bar for other players, only shown once they are hurt.
 function healthBar(actor) {
   if (actor.userData.bar) return actor.userData.bar;
-  const bar = new THREE.Group(); bar.position.y = 3.95; bar.renderOrder = 10;
+  const bar = new THREE.Group(); bar.position.y = actor.userData.height + 0.75; bar.renderOrder = 10;
   const back = new THREE.Mesh(BAR_PLANE, barBackMaterial); back.scale.set(1.7, 0.24, 1); back.renderOrder = 10;
   const fill = new THREE.Mesh(BAR_PLANE, barFillMaterial); fill.position.z = 0.01; fill.renderOrder = 11;
   bar.add(back, fill); bar.userData.fill = fill;
@@ -265,10 +289,26 @@ function applyActorStatus(actor, status) {
 const barQuaternion = new THREE.Quaternion();
 function animateActor(actor, dt, baseY) {
   const data = actor.userData;
+  // Walk cycle driven by how far the character actually moved, so remote players animate too.
+  const moved = data.lastX === undefined ? 0 : Math.hypot(actor.position.x - data.lastX, actor.position.z - data.lastZ);
+  data.lastX = actor.position.x; data.lastZ = actor.position.z;
+  const speed = dt > 0 ? Math.min(moved / dt, 20) : 0;
+  const walking = speed > 0.6 && !data.down && !data.stars.visible;
+  data.stride = THREE.MathUtils.lerp(data.stride || 0, walking ? Math.min(1, speed / 9) : 0, 1 - Math.exp(-10 * dt));
+  data.phase = ((data.phase || 0) + dt * (4 + speed * 0.55)) % (Math.PI * 2);
+  data.time = (data.time || 0) + dt;
+  const swingAngle = Math.sin(data.phase) * 0.85 * data.stride;
+  const idle = Math.sin(data.time * 1.8) * 0.04 * (1 - data.stride);
   data.swing = Math.max(0, (data.swing || 0) - dt);
-  data.arm.rotation.x = data.swing > 0 ? -Math.sin((data.swing / 0.3) * Math.PI) * 1.7 : 0;
+  const attack = data.swing > 0 ? -Math.sin((data.swing / 0.3) * Math.PI) * 1.7 : 0;
+  // Holding something keeps the item arm raised a little so the item points forward.
+  const holding = data.item ? -0.35 : 0;
+  data.arm.rotation.x = attack || (holding + swingAngle * (data.item ? 0.4 : 1) + idle);
+  if (data.armL) data.armL.rotation.x = -swingAngle - idle;
+  if (data.legR) { data.legR.rotation.x = -swingAngle; data.legL.rotation.x = swingAngle; }
+  if (data.head) data.head.rotation.y = data.stars.visible ? Math.sin(data.time * 6) * 0.25 : 0;
   actor.rotation.x = data.down ? -Math.PI / 2 : 0;
-  actor.position.y = baseY + (data.down ? 0.45 : 0);
+  actor.position.y = baseY + (data.down ? 0.45 : Math.abs(Math.sin(data.phase)) * 0.08 * data.stride);
   if (data.stars.visible) data.stars.rotation.y += dt * 5;
   if (data.bar?.visible) data.bar.quaternion.copy(actor.getWorldQuaternion(barQuaternion).invert().multiply(camera.quaternion));
 }

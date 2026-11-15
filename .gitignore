@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Source character sculpts are ~95 MB each; only the built GLB files belong in the repo.
+*.stl
+node_modules
