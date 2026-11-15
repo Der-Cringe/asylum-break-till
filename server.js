@@ -5,6 +5,7 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const ITEMS = require('./public/items.js');
+const LAYOUT = require('./public/layout.js');
 
 const VERSION = '2026.11.15-2';
 const app = express();
@@ -12,13 +13,8 @@ app.disable('x-powered-by');
 const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
-const FLOOR_Y = [0, 9, 18, 27];
-const SPAWNS = {
-  patient: { x: -72, z: 8, floor: 3 },
-  medic: { x: -70, z: 0, floor: 2 },
-  orderly: { x: 70, z: 0, floor: 2 },
-  director: { x: 70, z: 43, floor: 1 },
-};
+// Floors, spawns, stairwells, loot spots and walls live in public/layout.js, shared with the browser.
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween } = LAYOUT;
 const INVENTORIES = {
   patient: ['glassShard'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'],
@@ -30,8 +26,6 @@ const ROLE_LIMITS = { director: 1 };
 const MAX_PLAYERS = 40;
 const MAX_SLOTS = 6;
 const SPRINT_SPEED = 14;
-// Stairwells sit at x = ±78, steps run from z = -7 to z = 4.
-const STAIRS = [{ x: -78, z: -1.5 }, { x: 78, z: -1.5 }];
 const STAIR_RADIUS = 16;
 const SESSION_TTL_MS = 60_000;
 const TICK_MS = 100;
@@ -39,18 +33,7 @@ const EVENTS_PER_SECOND = 30;
 const RESPAWN_MS = 5000;
 const PICKUP_RADIUS = 2;
 const PICKUP_RESPAWN_MS = 40_000;
-// Loot spots around the map. Patient loot sits in patient areas, staff loot in the medical bay.
-const PATIENT_LOOT = ['glassShard', 'tableLeg', 'tableLeg', 'fireBottle', 'pipeBomb', 'floorMine', 'stolenScrubs', 'energySoda', 'coffee'];
-const STAFF_LOOT = ['coffee', 'energySoda', 'fireExtinguisher', 'flashGrenade', 'smallMedicalKit'];
-const PICKUP_SPOTS = [
-  { floor: 3, x: -30, z: 20, pool: PATIENT_LOOT }, { floor: 3, x: -8, z: -30, pool: PATIENT_LOOT },
-  { floor: 3, x: 22, z: 38, pool: PATIENT_LOOT }, { floor: 3, x: 36, z: -16, pool: PATIENT_LOOT },
-  { floor: 3, x: -40, z: -46, pool: PATIENT_LOOT }, { floor: 3, x: 4, z: 12, pool: PATIENT_LOOT },
-  { floor: 0, x: -30, z: -20, pool: PATIENT_LOOT }, { floor: 0, x: 30, z: 30, pool: PATIENT_LOOT },
-  { floor: 1, x: -40, z: 14, pool: PATIENT_LOOT }, { floor: 1, x: 40, z: -14, pool: PATIENT_LOOT },
-  { floor: 2, x: -22, z: -40, pool: STAFF_LOOT }, { floor: 2, x: 22, z: -40, pool: STAFF_LOOT },
-  { floor: 2, x: 0, z: 30, pool: STAFF_LOOT }, { floor: 0, x: 0, z: 45, pool: STAFF_LOOT },
-];
+const PICKUP_SPOTS = LAYOUT.PICKUPS.map(spot => ({ ...spot, pool: LAYOUT.LOOT[spot.pool] }));
 
 const players = new Map();
 const sessions = new Map(); // session token -> { player, expires } for players that dropped connection
@@ -146,7 +129,7 @@ function targetsInFront(player, range, arc, filter) {
   for (const other of players.values()) {
     if (other === player || other.floor !== player.floor || !filter(other)) continue;
     const dx = other.x - player.x, dz = other.z - player.z, distance = Math.hypot(dx, dz);
-    if (distance > range) continue;
+    if (distance > range || wallBetween(player.floor, player.x, player.z, other.x, other.z)) continue;
     const angle = distance < 0.01 ? 0 : Math.acos(Math.max(-1, Math.min(1, (dx * dir.x + dz * dir.z) / distance)));
     if (angle <= arc / 2) found.push({ other, distance });
   }
@@ -220,7 +203,7 @@ function detonate(owner, floor, x, z, fx) {
   for (const target of players.values()) {
     if (target.floor !== floor) continue;
     const distance = Math.hypot(target.x - x, target.z - z);
-    if (distance > fx.radius) continue;
+    if (distance > fx.radius || wallBetween(floor, x, z, target.x, target.z)) continue;
     if (blockedByShield(target, x, z)) { effect({ type: 'block', x: target.x, z: target.z, floor }); continue; }
     const closeness = 1 - distance / fx.radius;
     // A flash is bright for everyone standing in it, whichever side threw it.
@@ -254,9 +237,13 @@ const USE_HANDLERS = {
   },
   throw(player, def) {
     const dir = facing(player);
+    // Throwables land short of the first wall in their way.
+    let range = def.throwRange;
+    while (range > 0 && wallBetween(player.floor, player.x, player.z, player.x + dir.x * range, player.z + dir.z * range)) range -= 0.5;
+    range = Math.max(0, range - 0.8);
     const to = {
-      x: finiteClamp(player.x + dir.x * def.throwRange, -86, 86, player.x),
-      z: finiteClamp(player.z + dir.z * def.throwRange, -62, 62, player.z),
+      x: finiteClamp(player.x + dir.x * range, -BOUNDS.x, BOUNDS.x, player.x),
+      z: finiteClamp(player.z + dir.z * range, -BOUNDS.z, BOUNDS.z, player.z),
     };
     const floor = player.floor;
     const owner = ownerSnapshot(player);
@@ -471,12 +458,13 @@ io.on('connection', socket => {
       dirty = true;
       return;
     }
-    const x = finiteClamp(data.x, -86, 86, player.x);
-    const z = finiteClamp(data.z, -62, 62, player.z);
-    // Allow some slack for network jitter; anything faster than sprinting is a teleport.
+    const x = finiteClamp(data.x, -BOUNDS.x, BOUNDS.x, player.x);
+    const z = finiteClamp(data.z, -BOUNDS.z, BOUNDS.z, player.z);
+    // Allow some slack for network jitter; anything faster than sprinting is a teleport, and
+    // nobody walks through walls.
     const allowed = SPRINT_SPEED * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
     let corrected = false;
-    if (Math.hypot(x - player.x, z - player.z) <= allowed) { player.x = x; player.z = z; } else corrected = true;
+    if (Math.hypot(x - player.x, z - player.z) <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
     if (Number.isInteger(data.floor) && data.floor !== player.floor) {
       if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length && nearStairs(player.x, player.z)) {
         player.floor = data.floor;

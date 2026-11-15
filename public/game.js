@@ -1,30 +1,34 @@
 import * as THREE from 'three';
 import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-3';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-1';
+import { buildInterior } from './interior.js?v=20261115-2';
 
 const ITEMS = window.ITEMS || {};
+const LAYOUT = window.LAYOUT;
 
 const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
-  orderly: { name: 'Orderly', color: 0x2878d0, floor: 2, x: 70, z: 0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
-  medic: { name: 'Medic', color: 0x35b987, floor: 2, x: -70, z: 0, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'], ability: 'Field treatment', maxHealth: 100 },
-  director: { name: 'Facility Director', color: 0x9670d5, floor: 1, x: 70, z: 43, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
-  patient: { name: 'Patient', color: 0xc85953, floor: 3, x: -72, z: 8, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
+  orderly: { name: 'Orderly', color: 0x2878d0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
+  medic: { name: 'Medic', color: 0x35b987, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'], ability: 'Field treatment', maxHealth: 100 },
+  director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
+  patient: { name: 'Patient', color: 0xc85953, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
 };
-const FLOOR_Y = [0, 9, 18, 27];
-const FLOOR_NAMES = ['GROUND', 'U1', 'U2', 'U3'];
-// Stairwells sit at x = ±78, steps run from z = -7 to z = 4. Keep in sync with server.js.
-const STAIRS = [{ x: -78, z: -1.5 }, { x: 78, z: -1.5 }];
+for (const [role, def] of Object.entries(ROLES)) Object.assign(def, LAYOUT.SPAWNS[role]);
+// Floors, stairwells and the building itself come from layout.js, which the server shares.
+const { FLOOR_Y, FLOOR_NAMES, STAIRS, BOUNDS, WALL_HEIGHT } = LAYOUT;
 const STAIR_RADIUS = 14;
 const PLAYER_RADIUS = 0.6;
-const CAMERA_PRESETS = [
-  { label: 'Research', floor: 1, x: -42, z: -30, yaw: -0.8, pitch: 0.5 },
-  { label: 'Medical', floor: 2, x: 38, z: 30, yaw: 1.2, pitch: 0.45 },
-  { label: 'Ward', floor: 3, x: -18, z: 56, yaw: 2.5, pitch: 0.42 },
-  { label: 'Exit', floor: 0, x: 0, z: -40, yaw: 0.5, pitch: 0.55 },
-];
+const CAMERA_PRESETS = LAYOUT.CAMERAS;
+// Third person orbits behind the character; first person looks out of its eyes.
+const CAMERA = {
+  // Pitch is where the player looks: positive is up. Looking up in third person lowers the camera.
+  third: { fov: 62, minPitch: -0.95, maxPitch: 0.35, pitch: -0.32, distance: 7.5, minDistance: 2.6, maxDistance: 11 },
+  first: { fov: 74, minPitch: -1.35, maxPitch: 1.35, pitch: -0.05 },
+};
+const storedCameraMode = (() => { try { return localStorage.getItem('asylumCameraMode'); } catch (_) { return null; } })();
 const state = {
-  role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: 0.34, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null,
+  role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: CAMERA.third.pitch, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null,
+  cameraMode: storedCameraMode === 'first' ? 'first' : 'third', zoom: CAMERA.third.distance, cameraDistance: CAMERA.third.distance,
   // Combat status from the server, converted to local performance.now() deadlines.
   stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, look: null,
 };
@@ -45,9 +49,10 @@ let noticeTimer = 0;
 let visibleFloor = -1;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101923);
-scene.fog = new THREE.Fog(0x101923, 90, 245);
-const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 500);
+scene.background = new THREE.Color(0x0b1016);
+scene.fog = new THREE.Fog(0x1a2026, 60, 170);
+const camera = new THREE.PerspectiveCamera(CAMERA.third.fov, innerWidth / innerHeight, 0.08, 400);
+scene.add(camera); // The first-person view model hangs off the camera.
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 const isTouch = window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
@@ -57,17 +62,22 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.HemisphereLight(0xdcecff, 0x35404b, 1.6));
-const keyLight = new THREE.DirectionalLight(0xffe6c1, 2.15);
-keyLight.position.set(-38, 70, 32);
+// Indoors: a soft fluorescent wash from above, plus a near-vertical key light that follows the
+// player so characters and furniture get crisp contact shadows without the walls striping the floor.
+scene.add(new THREE.HemisphereLight(0xeef6ff, 0x5b5f5c, 1.75));
+scene.add(new THREE.AmbientLight(0xdfe8ef, 0.35));
+const keyLight = new THREE.DirectionalLight(0xfff4e2, 1.6);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.setScalar(isTouch ? 1024 : 1536);
-Object.assign(keyLight.shadow.camera, { left: -105, right: 105, top: 105, bottom: -105, near: 0.5, far: 220 });
-keyLight.shadow.bias = -0.00015;
-scene.add(keyLight);
-const blueFill = new THREE.PointLight(0x438de3, 75, 110, 2);
-blueFill.position.set(0, 18, 0);
-scene.add(blueFill);
+keyLight.shadow.mapSize.setScalar(isTouch ? 1024 : 2048);
+Object.assign(keyLight.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 80 });
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.04;
+scene.add(keyLight, keyLight.target);
+function moveKeyLight(x, y, z) {
+  keyLight.target.position.set(x, y, z);
+  keyLight.position.set(x + 7, y + 40, z + 5);
+}
+moveKeyLight(0, 0, 0);
 
 // One shared unit box and cached materials: every box is just a scaled mesh, so characters that
 // leave the game do not leak GPU buffers and the map does not allocate hundreds of geometries.
@@ -79,7 +89,8 @@ function standard(color, roughness = 0.8, metalness = 0.03) {
   return materialCache.get(key);
 }
 const floors = [];
-const colliders = FLOOR_Y.map(() => []);
+// Furniture and walls block movement; the boxes come from layout.js.
+const colliders = LAYOUT.solids;
 function addBox(parent, x, y, z, w, h, d, materialOrColor, options = {}) {
   const material = materialOrColor?.isMaterial ? materialOrColor : standard(materialOrColor, options.roughness, options.metalness);
   const mesh = new THREE.Mesh(UNIT_BOX, material);
@@ -88,65 +99,12 @@ function addBox(parent, x, y, z, w, h, d, materialOrColor, options = {}) {
   mesh.castShadow = options.castShadow ?? true;
   mesh.receiveShadow = true;
   parent.add(mesh);
-  if (options.solidOn !== undefined) colliders[options.solidOn].push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
   return mesh;
 }
-function addSign(parent, text, x, y, z, tint = '#51d6e8') {
-  const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 96;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#09131f'; ctx.fillRect(0, 0, 512, 96);
-  ctx.fillStyle = tint; ctx.fillRect(0, 0, 512, 8);
-  ctx.fillStyle = '#f2f7fb'; ctx.font = 'bold 27px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, 256, 53);
-  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(14, 2.6), new THREE.MeshBasicMaterial({ map: texture }));
-  sign.position.set(x, y, z); parent.add(sign);
+for (let i = 0; i < FLOOR_Y.length; i++) {
+  floors[i] = new THREE.Group(); floors[i].visible = false; scene.add(floors[i]);
 }
-const ceilingLightMaterial = new THREE.MeshStandardMaterial({ color: 0x93d8e2, emissive: 0x1d7b91, emissiveIntensity: 1.2, roughness: 0.35 });
-const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x80d3df, transparent: true, opacity: 0.38, roughness: 0.2 });
-function addCeilingLights(parent, y) {
-  for (const z of [-46, -15, 16, 47]) addBox(parent, 0, y + 6.72, z, 17, 0.12, 1.1, ceilingLightMaterial, { castShadow: false });
-}
-function buildFloor(index) {
-  const y = FLOOR_Y[index]; const group = new THREE.Group(); floors[index] = group; scene.add(group);
-  const lab = index === 1; const ward = index === 3;
-  const groundMaterial = standard(lab ? 0x52606a : ward ? 0xb9c2c2 : 0x929da2, 0.92);
-  const wallMaterial = standard(lab ? 0x303b47 : 0xd1d2cc, 0.86);
-  const solid = { solidOn: index };
-  addBox(group, 0, y - 0.3, 0, 180, 0.6, 132, groundMaterial, { castShadow: false });
-  addBox(group, 0, y + 3.4, -65.5, 180, 6.8, 1, wallMaterial);
-  addBox(group, 0, y + 3.4, 65.5, 180, 6.8, 1, wallMaterial);
-  addBox(group, -89.5, y + 3.4, 0, 1, 6.8, 132, wallMaterial);
-  addBox(group, 89.5, y + 3.4, 0, 1, 6.8, 132, wallMaterial);
-  addCeilingLights(group, y);
-
-  const bedFrame = standard(0x415464, 0.58, 0.22);
-  for (const z of [-45, -27, -9, 9, 27, 45]) for (const x of [-68, -54, 54, 68]) {
-    addBox(group, x, y + 0.43, z, 5.3, 0.24, 2.5, bedFrame, solid);
-    addBox(group, x, y + 0.64, z, 5.0, 0.2, 2.2, lab ? 0x8db6bc : 0xdfe7e7);
-    addBox(group, x - 1.4, y + 0.79, z, 2.4, 0.08, 1.6, 0xf1f3eb);
-  }
-  for (const side of [-1, 1]) {
-    for (let i = 0; i < 10; i++) addBox(group, side * 78, y + 0.16 + i * 0.36, -7 + i * 1.25, 4, 0.22, 1.2, 0x5e6a75);
-    addSign(group, 'STAIRS · E ▲  F ▼', side * 78, y + 4.8, -16, '#6dd9e7');
-  }
-  if (lab) {
-    for (const side of [-1, 1]) for (const x of [-60, -20, 20, 60]) {
-      addBox(group, x, y + 1.45, side * 37, 28, 2.9, 0.8, 0x424e5b, solid);
-      addBox(group, x, y + 3.35, side * 37, 25, 1.0, 0.16, glassMaterial);
-      addBox(group, x, y + 0.7, side * 49, 11, 1.4, 3, 0x766956, solid);
-      addBox(group, x, y + 1.45, side * 49, 9, 0.14, 2.6, 0x4aa8b0);
-    }
-    addSign(group, 'RESEARCH DIVISION · RESTRICTED', 0, y + 5.5, -63, '#b39aff');
-  } else if (ward) {
-    addBox(group, -18, y + 1.1, 56, 14, 2.1, 5, 0x765d46, solid);
-    addBox(group, -18, y + 2.22, 56, 12, 0.14, 3.8, 0x45b6c5);
-    addSign(group, 'PATIENT WARD · RECOVERY', 0, y + 5.5, -63, '#70dbaf');
-  } else {
-    addSign(group, index === 2 ? 'MEDICAL BAY · SECURITY' : 'GROUND FLOOR · EXIT', 0, y + 5.5, -63, index === 2 ? '#65d9ad' : '#56d5e8');
-  }
-  group.visible = false;
-}
-for (let i = 0; i < FLOOR_Y.length; i++) buildFloor(i);
+buildInterior(floors);
 
 // Swap the blocky stand-ins for the real models as soon as each one has loaded.
 loadCharacterModels(role => {
@@ -344,14 +302,109 @@ function setFloor(index) {
   document.getElementById('floorLabel').textContent = `FLOOR · ${FLOOR_NAMES[state.floor]}`;
   updateCamera(1);
 }
-const cameraTarget = new THREE.Vector3();
+// How far a ray from (px, pz) along (dx, dz) gets before it would come within `margin` of a wall.
+function clearDistance(floor, px, pz, dx, dz, max, margin = 0.35) {
+  let best = max;
+  for (const box of colliders[floor]) {
+    if (!box.tall) continue;
+    let t0 = 0, t1 = best, hit = true;
+    for (const [p, d, min, max] of [[px, dx, box.minX - margin, box.maxX + margin], [pz, dz, box.minZ - margin, box.maxZ + margin]]) {
+      if (Math.abs(d) < 1e-6) { if (p < min || p > max) { hit = false; break; } continue; }
+      let a = (min - p) / d, b = (max - p) / d;
+      if (a > b) [a, b] = [b, a];
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 > t1) { hit = false; break; }
+    }
+    if (hit) best = Math.max(0, t0);
+  }
+  return best;
+}
+const lookTarget = new THREE.Vector3();
 function updateCamera(alpha) {
-  const view = state.view || state;
-  // Tablet cameras hang higher and further back to overlook a whole room.
-  const distance = state.view ? 30 : 14, height = state.view ? 20 : 9.5;
-  cameraTarget.set(view.x + Math.sin(view.yaw) * distance, FLOOR_Y[view.floor] + height + view.pitch * 3, view.z + Math.cos(view.yaw) * distance);
-  camera.position.lerp(cameraTarget, alpha);
-  camera.lookAt(view.x, FLOOR_Y[view.floor] + 1.45, view.z);
+  // Tablet cameras hang under the ceiling in a corner of the room and look across it.
+  if (state.view) {
+    const view = state.view, y = FLOOR_Y[view.floor];
+    camera.position.set(view.x, y + WALL_HEIGHT - 1.1, view.z);
+    camera.lookAt(view.tx, y + 1, view.tz);
+    return;
+  }
+  const y = FLOOR_Y[state.floor];
+  const height = state.actor?.userData.height ?? 3;
+  const cos = Math.cos(state.pitch), sin = Math.sin(state.pitch);
+  if (state.cameraMode === 'first') {
+    const data = state.actor?.userData;
+    const bob = data ? Math.sin((data.phase || 0) * 2) * 0.07 * (data.stride || 0) : 0;
+    camera.position.set(state.x, y + height * 0.88 + bob, state.z);
+    lookTarget.set(state.x - Math.sin(state.yaw) * cos, camera.position.y + sin, state.z - Math.cos(state.yaw) * cos);
+    camera.lookAt(lookTarget);
+    return;
+  }
+  // Third person: orbit behind the character, pulled in so walls and the ceiling never get in between.
+  const pivotY = y + height * 0.92;
+  const elevation = -state.pitch, up = Math.sin(elevation), across = Math.cos(elevation);
+  let distance = state.zoom;
+  const reach = clearDistance(state.floor, state.x, state.z, Math.sin(state.yaw), Math.cos(state.yaw), distance * across);
+  if (across > 0.05) distance = Math.min(distance, reach / across);
+  if (up > 0.01) distance = Math.min(distance, (y + WALL_HEIGHT - 0.35 - pivotY) / up);
+  if (up < -0.01) distance = Math.min(distance, (y + 0.45 - pivotY) / up);
+  distance = Math.max(0.3, distance);
+  // Snap in when something blocks the view, ease back out once it is clear.
+  state.cameraDistance = distance < state.cameraDistance ? distance : THREE.MathUtils.lerp(state.cameraDistance, distance, alpha);
+  const d = state.cameraDistance;
+  camera.position.set(state.x + Math.sin(state.yaw) * across * d, pivotY + up * d, state.z + Math.cos(state.yaw) * across * d);
+  camera.lookAt(state.x, pivotY, state.z);
+}
+// First person shows the held item (and a sleeve) in the lower right of the screen.
+const viewModel = new THREE.Group();
+const VIEW_MODEL_AT = new THREE.Vector3(0.62, -0.62, -1.3);
+viewModel.position.copy(VIEW_MODEL_AT);
+camera.add(viewModel);
+function syncViewModel() {
+  viewModel.clear();
+  viewModel.userData.item = state.equipped;
+  if (!state.role || !state.equipped || !ITEMS[state.equipped]) return;
+  const sleeve = standard(ROLES[state.look || state.role]?.color ?? 0x777777, 0.7);
+  const arm = addBox(viewModel, 0.05, -0.16, 0.5, 0.2, 0.2, 0.9, sleeve, { castShadow: false });
+  arm.rotation.x = 0.3;
+  addBox(viewModel, 0.03, -0.02, 0, 0.17, 0.17, 0.2, standard(0xe9bd9e, 0.9), { castShadow: false });
+  {
+    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color);
+    model.rotation.y = Math.PI; // Item models point along +z; the camera looks along -z.
+    model.position.set(0.02, 0.08, -0.1);
+    model.traverse(child => { child.castShadow = false; });
+    viewModel.add(model);
+  }
+}
+function animateViewModel(dt) {
+  const data = state.actor?.userData;
+  viewModel.visible = state.cameraMode === 'first' && !state.view && viewModel.children.length > 0 && !isDown();
+  if (!data || !viewModel.visible) return;
+  const swing = data.swing > 0 ? Math.sin((data.swing / 0.3) * Math.PI) : 0;
+  const sway = Math.sin(data.phase || 0) * 0.03 * (data.stride || 0);
+  viewModel.position.set(VIEW_MODEL_AT.x + sway, VIEW_MODEL_AT.y - Math.abs(sway) * 0.6 - swing * 0.05, VIEW_MODEL_AT.z - swing * 0.3);
+  viewModel.rotation.set(-swing * 1.1, swing * 0.35, 0);
+}
+const canPointerLock = !isTouch && typeof renderer.domElement.requestPointerLock === 'function';
+const pointerLocked = () => document.pointerLockElement === renderer.domElement;
+function setCameraMode(mode, announce = true) {
+  if (mode !== 'first' && mode !== 'third') return;
+  const changed = mode !== state.cameraMode;
+  state.cameraMode = mode;
+  const config = CAMERA[mode];
+  if (changed) state.pitch = config.pitch;
+  if (mode === 'third') { state.zoom = Math.max(state.zoom, 4); state.cameraDistance = 0.5; }
+  camera.fov = config.fov; camera.updateProjectionMatrix();
+  if (mode === 'third' && pointerLocked()) document.exitPointerLock();
+  document.body.classList.toggle('first-person', mode === 'first');
+  const button = document.getElementById('viewButton');
+  if (button) button.textContent = mode === 'first' ? '1ST' : '3RD';
+  try { localStorage.setItem('asylumCameraMode', mode); } catch (_) {}
+  if (changed && announce && state.role) showNotice(mode === 'first' ? `First person${canPointerLock ? ' · click to aim' : ''}` : 'Third person');
+}
+function turnCamera(dx, dy) {
+  const config = CAMERA[state.cameraMode];
+  state.yaw -= dx * 0.006;
+  state.pitch = THREE.MathUtils.clamp(state.pitch - dy * 0.004, config.minPitch, config.maxPitch);
 }
 function setHealth(value, max = state.maxHealth) {
   state.maxHealth = max;
@@ -375,7 +428,9 @@ function selectItem(item) {
   document.querySelectorAll('.equipment-slot').forEach(el => el.classList.toggle('selected', el.dataset.item === item));
   document.getElementById('tabletPanel').classList.toggle('hidden', item !== 'tablet');
   if (item !== 'tablet') setView(null);
+  else if (pointerLocked()) document.exitPointerLock(); // The camera list needs the mouse.
   if (state.actor) applyActorStatus(state.actor, { equippedItem: item, stunned: isStunned(), down: isDown() });
+  if (viewModel.userData.item !== item) syncViewModel();
 }
 // Slots are { item, uses, cooldown } from the server; plain item names work before it answers.
 function renderSlots(slotsData) {
@@ -451,6 +506,7 @@ function applySelfState(data) {
     state.actor?.parent?.remove(state.actor);
     state.actor = makeCharacter(look || state.role); scene.add(state.actor);
     state.actor.userData.item = undefined;
+    syncViewModel();
   }
   if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown() });
   updateStatusEffect();
@@ -493,6 +549,7 @@ function chooseRole(roleKey) {
   Object.assign(state, { look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, slotSignature: null });
   state.actor?.parent?.remove(state.actor);
   state.actor = makeCharacter(roleKey); scene.add(state.actor);
+  syncViewModel();
   setView(null);
   setFloor(role.floor);
   document.getElementById('roleLabel').textContent = `ROLE · ${role.name.toUpperCase()}`;
@@ -595,6 +652,7 @@ window.addEventListener('keydown', event => {
   if (event.code === 'KeyE') changeFloor(1);
   if (event.code === 'KeyF') changeFloor(-1);
   if (event.code === 'KeyQ') useAbility();
+  if (event.code === 'KeyV' && state.role) setCameraMode(state.cameraMode === 'first' ? 'third' : 'first');
   if (event.code === 'Space') useItem();
   if (/^Digit[1-6]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
 }, { passive: false });
@@ -603,15 +661,20 @@ window.addEventListener('blur', () => keys.clear());
 
 renderer.domElement.addEventListener('pointerdown', event => {
   if (event.target.closest?.('button')) return;
-  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: 0, mouse: event.pointerType === 'mouse' && event.button === 0 };
-  renderer.domElement.setPointerCapture?.(event.pointerId);
+  // With the mouse captured in first person, clicking uses the held item.
+  if (pointerLocked()) { if (event.button === 0) useItem(); return; }
+  // The first click in first person captures the mouse instead of using the item. Dragging still
+  // turns the camera in case the browser refuses the capture.
+  const capture = canPointerLock && event.pointerType === 'mouse' && state.cameraMode === 'first' && state.role && !state.view;
+  if (capture) renderer.domElement.requestPointerLock()?.catch?.(() => {});
+  lastCameraPointer = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: 0, mouse: !capture && event.pointerType === 'mouse' && event.button === 0 };
+  try { renderer.domElement.setPointerCapture?.(event.pointerId); } catch (_) { /* Pointer lock already took the mouse. */ }
 });
 renderer.domElement.addEventListener('pointermove', event => {
   if (!lastCameraPointer || event.pointerId !== lastCameraPointer.id) return;
   const dx = event.clientX - lastCameraPointer.x, dy = event.clientY - lastCameraPointer.y;
   lastCameraPointer.moved += Math.abs(dx) + Math.abs(dy);
-  state.yaw -= dx * 0.006;
-  state.pitch = THREE.MathUtils.clamp(state.pitch - dy * 0.004, -0.25, 0.8);
+  turnCamera(dx, dy);
   lastCameraPointer.x = event.clientX; lastCameraPointer.y = event.clientY;
 });
 for (const type of ['pointerup', 'pointercancel']) {
@@ -622,6 +685,17 @@ for (const type of ['pointerup', 'pointercancel']) {
     lastCameraPointer = null;
   });
 }
+document.addEventListener('mousemove', event => { if (pointerLocked()) turnCamera(event.movementX * 0.5, event.movementY * 0.5); });
+// The wheel zooms the third-person camera; zooming all the way in switches to first person and back.
+renderer.domElement.addEventListener('wheel', event => {
+  if (!state.role || state.view) return;
+  event.preventDefault();
+  const { minDistance, maxDistance } = CAMERA.third;
+  if (state.cameraMode === 'first') { if (event.deltaY > 0) { setCameraMode('third'); state.zoom = minDistance + 0.6; } return; }
+  const next = state.zoom * (1 + THREE.MathUtils.clamp(event.deltaY, -100, 100) * 0.0015);
+  if (next < minDistance && event.deltaY < 0) { setCameraMode('first'); return; }
+  state.zoom = THREE.MathUtils.clamp(next, minDistance, maxDistance);
+}, { passive: false });
 
 const joystickZone = document.getElementById('joystickZone');
 const pad = document.getElementById('movePad');
@@ -654,6 +728,7 @@ for (const type of ['pointerup','pointercancel','pointerleave']) sprintButton.ad
 document.getElementById('stairsUpButton').addEventListener('click', () => changeFloor(1));
 document.getElementById('stairsDownButton').addEventListener('click', () => changeFloor(-1));
 document.getElementById('abilityButton').addEventListener('click', useAbility);
+document.getElementById('viewButton').addEventListener('click', () => setCameraMode(state.cameraMode === 'first' ? 'third' : 'first'));
 document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
 document.getElementById('fullscreenButton').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); } catch (_) { showNotice('Fullscreen is unavailable in this browser'); }
@@ -677,15 +752,20 @@ function animate() {
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
     const stepX = (-Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt;
     const stepZ = (-Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt;
-    const nextX = THREE.MathUtils.clamp(state.x + stepX, -86, 86);
+    const nextX = THREE.MathUtils.clamp(state.x + stepX, -BOUNDS.x, BOUNDS.x);
     if (!blocked(nextX, state.z, state.floor)) state.x = nextX;
-    const nextZ = THREE.MathUtils.clamp(state.z + stepZ, -62, 62);
+    const nextZ = THREE.MathUtils.clamp(state.z + stepZ, -BOUNDS.z, BOUNDS.z);
     if (!blocked(state.x, nextZ, state.floor)) state.z = nextZ;
     state.actor.position.set(state.x, FLOOR_Y[state.floor], state.z);
     state.actor.rotation.y = state.yaw + Math.PI;
-    state.actor.visible = visibleFloor === state.floor;
+    // Your own body is hidden when the camera is inside (or right behind) your head.
+    const insideHead = !state.view && (state.cameraMode === 'first' || state.cameraDistance < 1.3);
+    state.actor.visible = visibleFloor === state.floor && !insideHead;
     animateActor(state.actor, dt, FLOOR_Y[state.floor]);
     updateCamera(1 - Math.exp(-7 * dt));
+    animateViewModel(dt);
+    const focus = state.view || state;
+    moveKeyLight(focus.x, FLOOR_Y[focus.floor], focus.z);
     if (socket?.connected && now - lastNetworkUpdate > 100) sendPosition();
     updateSlotCooldowns(now);
     updateStatusEffect();
@@ -709,6 +789,7 @@ function animate() {
   renderer.render(scene, camera);
 }
 setFloor(0);
+setCameraMode(state.cameraMode, false);
 animate();
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();

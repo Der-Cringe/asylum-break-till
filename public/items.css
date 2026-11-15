@@ -13,3 +13,6 @@
 @media (max-width:560px){#statusEffect{top:auto;bottom:200px}}
 /* Flash grenade: covers the whole screen, HUD included, then fades. Opacity is driven from game.js. */
 #flashBlind{position:fixed;inset:0;z-index:90;pointer-events:none;background:radial-gradient(circle at center,#fff 0%,#fff 55%,#f2f7ff 100%);opacity:0}
+
+/* The crosshair only makes sense when looking out of the character's eyes. */
+body:not(.first-person) #crosshair,body:not(.in-game) #crosshair{display:none}
