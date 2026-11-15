@@ -5,16 +5,19 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const ITEMS = require('./public/items.js');
+// Staircases are placed at random from this seed; browsers get the same one from /layout-seed.js.
+const STAIR_SEED = Number(process.env.STAIR_SEED) || 1 + Math.floor(Math.random() * 0x7ffffffe);
+globalThis.STAIR_SEED = STAIR_SEED;
 const LAYOUT = require('./public/layout.js');
 
-const VERSION = '2026.11.15-2';
+const VERSION = '2026.11.15-3';
 const app = express();
 app.disable('x-powered-by');
 const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
-// Floors, spawns, stairwells, loot spots and walls live in public/layout.js, shared with the browser.
-const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween } = LAYOUT;
+// Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween, stairBody, stairHeight } = LAYOUT;
 const INVENTORIES = {
   patient: ['glassShard'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'],
@@ -26,7 +29,8 @@ const ROLE_LIMITS = { director: 1 };
 const MAX_PLAYERS = 40;
 const MAX_SLOTS = 6;
 const SPRINT_SPEED = 14;
-const STAIR_RADIUS = 16;
+const STAIR_SLACK = 3;
+const MAX_JUMP = 4;
 const SESSION_TTL_MS = 60_000;
 const TICK_MS = 100;
 const EVENTS_PER_SECOND = 30;
@@ -44,6 +48,10 @@ let nextEntityId = 1;
 let dirty = false;
 let pickupsDirty = true;
 
+app.get('/layout-seed.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('application/javascript').send(`window.STAIR_SEED = ${STAIR_SEED};\n`);
+});
 app.use(express.static(path.join(__dirname, 'public'), {
   // Revalidate everything so deploys show up immediately, but let unchanged files come back as 304.
   setHeaders(res) { res.setHeader('Cache-Control', 'no-cache'); },
@@ -56,7 +64,12 @@ function finiteClamp(value, min, max, fallback) {
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
 }
 const isObject = data => data !== null && typeof data === 'object';
-const nearStairs = (x, z) => STAIRS.some(stair => Math.hypot(x - stair.x, z - stair.z) <= STAIR_RADIUS);
+// Changing floors needs a staircase between the two floors under (or right next to) the player.
+const onStairsBetween = (floorA, floorB, x, z) => STAIRS.some(stair => {
+  if (stair.floor !== Math.min(floorA, floorB)) return false;
+  const box = stairBody(stair);
+  return x > box.minX - STAIR_SLACK && x < box.maxX + STAIR_SLACK && z > box.minZ - STAIR_SLACK && z < box.maxZ + STAIR_SLACK;
+});
 const teamOf = role => (role === 'patient' ? 'patient' : 'staff');
 const canUse = (player, item) => ITEMS[item] && (ITEMS[item].team === 'all' || ITEMS[item].team === teamOf(player.role));
 const hostile = (a, b) => a !== b && teamOf(a.role) !== teamOf(b.role);
@@ -66,10 +79,10 @@ function cleanName(value) {
   return String(value ?? '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Player';
 }
 function publicState(player) {
-  const { id, name, role, x, z, floor, yaw, health, maxHealth } = player;
+  const { id, name, role, x, z, floor, yaw, health, maxHealth, air } = player;
   const now = Date.now();
   return {
-    id, name, role, x, z, floor, yaw, health, maxHealth,
+    id, name, role, x, z, floor, yaw, health, maxHealth, air,
     equippedItem: player.equipped?.item ?? null,
     look: player.look, stunned: isStunned(player, now), down: isDown(player, now),
   };
@@ -418,7 +431,7 @@ io.on('connection', socket => {
       id: socket.id, name: cleanName(data.name), role,
       x: spawn.x, y: FLOOR_Y[spawn.floor], z: spawn.z, floor: spawn.floor, yaw: 0,
       health: MAX_HEALTH[role], maxHealth: MAX_HEALTH[role], inventory: freshLoadout(role), equipped: null,
-      stunUntil: 0, slowUntil: 0, holdUntil: 0, downUntil: 0, boostUntil: 0, boostMultiplier: 1, look: null, combo: null,
+      stunUntil: 0, slowUntil: 0, holdUntil: 0, downUntil: 0, boostUntil: 0, boostMultiplier: 1, look: null, combo: null, air: 0,
       ...(resumed && {
         x: resumed.x, y: resumed.y, z: resumed.z, floor: resumed.floor, health: resumed.health,
         inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look,
@@ -426,7 +439,7 @@ io.on('connection', socket => {
       session: token, lastMove: Date.now(),
     };
     players.set(socket.id, player);
-    socket.emit('assignedPlayer', { id: player.id, name: player.name, role, x: player.x, z: player.z, floor: player.floor, resumed: Boolean(resumed), ...selfState(player) });
+    socket.emit('assignedPlayer', { id: player.id, name: player.name, role, x: player.x, z: player.z, floor: player.floor, resumed: Boolean(resumed), layoutSeed: STAIR_SEED, ...selfState(player) });
     dirty = true;
   });
 
@@ -466,11 +479,13 @@ io.on('connection', socket => {
     let corrected = false;
     if (Math.hypot(x - player.x, z - player.z) <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
     if (Number.isInteger(data.floor) && data.floor !== player.floor) {
-      if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length && nearStairs(player.x, player.z)) {
+      if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length
+        && (onStairsBetween(player.floor, data.floor, player.x, player.z) || onStairsBetween(player.floor, data.floor, x, z))) {
         player.floor = data.floor;
       } else corrected = true;
     }
-    player.y = FLOOR_Y[player.floor];
+    player.air = finiteClamp(data.air, 0, MAX_JUMP, 0);
+    player.y = FLOOR_Y[player.floor] + stairHeight(player.floor, player.x, player.z);
     if (corrected) socket.emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
     tryPickup(player);
     dirty = true;

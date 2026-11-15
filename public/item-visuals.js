@@ -21,13 +21,14 @@ function box(parent, x, y, z, w, h, d, color, emissive) {
   return mesh;
 }
 
-// Models are built in hand space: +z points where the character is facing, +y is up.
+// Models are built in hand space: +z points where the character is facing, +y is up. Shields are
+// centred on their own origin instead, since they are carried in front of the body, not in the hand.
 const MODELS = {
   glassShard: g => { box(g, 0, 0, 0.3, 0.07, 0.16, 0.6, 0x9fe3ef, 0x1d5866); box(g, 0, 0, -0.05, 0.12, 0.14, 0.2, 0xd9d2c4); },
   tableLeg: g => { box(g, 0, 0, 0.55, 0.18, 0.18, 1.4, 0x8a5a33); box(g, 0, 0, 1.22, 0.24, 0.24, 0.12, 0x5d3b20); },
   stunBaton: g => { box(g, 0, 0, 0.45, 0.13, 0.13, 1.2, 0x2c3540); box(g, 0, 0, 1.06, 0.16, 0.16, 0.12, 0xf2d33b, 0x8a6d00); },
-  riotShield: g => { box(g, -0.7, 0.55, 0.55, 1.35, 1.9, 0.08, solidGlass(0x8fb4cf)); box(g, -0.7, 0.7, 0.6, 1.1, 0.12, 0.04, 0xeef6fb); },
-  shockShield: g => { box(g, -0.7, 0.55, 0.55, 1.35, 1.9, 0.08, 0xc8463b); box(g, -0.7, 0.55, 0.61, 0.16, 1.6, 0.04, 0xf2d33b, 0x8a6d00); },
+  riotShield: g => { box(g, 0, 0, 0, 1.35, 1.9, 0.08, solidGlass(0x8fb4cf)); box(g, 0, 0.15, 0.05, 1.1, 0.12, 0.04, 0xeef6fb); },
+  shockShield: g => { box(g, 0, 0, 0, 1.35, 1.9, 0.08, 0xc8463b); box(g, 0, 0, 0.06, 0.16, 1.6, 0.04, 0xf2d33b, 0x8a6d00); },
   taser: g => { box(g, 0, 0, 0.2, 0.16, 0.24, 0.5, 0xf2d33b); box(g, 0, -0.18, 0.02, 0.12, 0.26, 0.14, 0x22282f); },
   fireBottle: g => { box(g, 0, 0.1, 0.15, 0.2, 0.4, 0.2, 0x5b8f3a); box(g, 0, 0.38, 0.15, 0.08, 0.2, 0.08, 0xff7a2f, 0xa03a00); },
   pipeBomb: g => { box(g, 0, 0.05, 0.15, 0.2, 0.2, 0.5, 0x6b7178); box(g, 0, 0.18, 0.15, 0.05, 0.12, 0.05, 0xd23a32); },

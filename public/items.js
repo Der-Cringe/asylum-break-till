@@ -41,7 +41,7 @@
       damage: 10, range: 3.6, arc: 1.2, cooldown: 1, slow: 1.8, stunIfSlowed: 3,
     },
     riotShield: {
-      name: 'Riot Shield', kind: 'melee', team: 'staff', color: 0x8fb4cf, shield: true,
+      name: 'Ignotus Shield', kind: 'melee', team: 'staff', color: 0x8fb4cf, shield: true,
       damage: 6, range: 3, arc: 1.4, cooldown: 1.3, stun: 1,
     },
     shockShield: {
