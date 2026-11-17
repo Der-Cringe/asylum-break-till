@@ -36,11 +36,11 @@
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
       'barrierShield', 'heavyShield', 'taserRifle', 'stunPistol', 'laserPistol', 'pepperballGun', 'netLauncher',
       'shockLasso', 'proximityTaser', 'flashGrenade', 'empGrenade', 'chargedEmp', 'gasGrenade', 'empLauncher',
-      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch', 'flashlight', 'flashlight',
+      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch', 'flashlight', 'flashlight', 'combatDrone', 'reconDrone',
     ],
     medical: [
       'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',
-      'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol',
+      'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol', 'therapyTurret',
     ],
     common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit', 'laundry', 'contraband'],
   };

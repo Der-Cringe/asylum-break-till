@@ -10,7 +10,7 @@ const STATION_VERBS = {
 };
 
 export function createWorld(ctx) {
-  const { state, socket, LAYOUT, ITEMS, showNotice, floors, scene, lights, glowing } = ctx;
+  const { state, socket, LAYOUT, ITEMS, showNotice, floors, scene, lights, glowing, makeItemModel, actorFor } = ctx;
   const $ = id => document.getElementById(id);
   const prompt = $('interactPrompt'), workBar = $('workBar'), workFill = $('workFill'), workLabel = $('workLabel');
   const shop = $('shopPanel'), shopList = $('shopList');
@@ -188,6 +188,64 @@ export function createWorld(ctx) {
     }
   }
 
+  // ---- Drones, turrets and the hostile detector -------------------------------------------------
+  const devices = new Map();
+  socket?.on('devices', list => {
+    if (!Array.isArray(list)) return;
+    const present = new Set();
+    for (const entry of list) {
+      if (!entry || !floors[entry.floor]) continue;
+      present.add(entry.id);
+      let device = devices.get(entry.id);
+      if (!device || device.floor !== entry.floor) {
+        if (device) device.group.parent?.remove(device.group);
+        const group = new THREE.Group();
+        const model = makeItemModel(entry.type); model.scale.setScalar(entry.type === 'therapyTurret' ? 3 : 2.6); group.add(model);
+        group.position.set(entry.x, LAYOUT.FLOOR_Y[entry.floor], entry.z);
+        floors[entry.floor].add(group);
+        device = { group, model, floor: entry.floor, hover: entry.type !== 'therapyTurret', phase: Math.random() * 6 };
+        devices.set(entry.id, device);
+      }
+      device.target = entry;
+    }
+    for (const [id, device] of devices) if (!present.has(id)) { device.group.parent?.remove(device.group); devices.delete(id); }
+  });
+  function updateDevices(dt, now) {
+    const smoothing = 1 - Math.exp(-10 * dt);
+    for (const device of devices.values()) {
+      const g = device.group, t = device.target;
+      g.position.x += (t.x - g.position.x) * smoothing; g.position.z += (t.z - g.position.z) * smoothing;
+      device.model.position.y = device.hover ? 3.2 + Math.sin(now / 300 + device.phase) * 0.2 : 0.4;
+      if (device.hover) device.model.rotation.y += dt * 0.8;
+    }
+  }
+  // Revealed enemies get a red marker over their heads that shows through walls.
+  const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b2f, depthTest: false, transparent: true, opacity: 0.9 });
+  const MARKER = new THREE.OctahedronGeometry(0.45);
+  const markers = new Map(); // player id -> { mesh, until, fallback }
+  socket?.on('reveal', data => {
+    if (!Array.isArray(data?.targets)) return;
+    const until = performance.now() + (Number(data.duration) || 2) * 1000;
+    for (const target of data.targets) {
+      let marker = markers.get(target.id);
+      if (!marker) {
+        const mesh = new THREE.Mesh(MARKER, markerMaterial); mesh.renderOrder = 20;
+        scene.add(mesh);
+        marker = { mesh }; markers.set(target.id, marker);
+      }
+      Object.assign(marker, { until, fallback: target });
+    }
+  });
+  function updateMarkers(now) {
+    for (const [id, marker] of markers) {
+      if (now > marker.until) { scene.remove(marker.mesh); markers.delete(id); continue; }
+      const actor = actorFor(id);
+      const at = actor ? actor.position : { x: marker.fallback.x, y: LAYOUT.FLOOR_Y[marker.fallback.floor], z: marker.fallback.z };
+      marker.mesh.position.set(at.x, at.y + 4.4 + Math.sin(now / 200) * 0.15, at.z);
+      marker.mesh.rotation.y = now / 400;
+    }
+  }
+
   // ---- Blackout --------------------------------------------------------------------------------
   // With the power cut the building goes nearly black; night vision goggles keep it readable.
   let blackoutUntil = 0, nightVision = false, lightLevel = 1;
@@ -277,6 +335,8 @@ export function createWorld(ctx) {
     updateDoors(dt);
     updateLights(now, dt);
     updateVehicles(dt);
+    updateDevices(dt, now);
+    updateMarkers(now);
     if (!state.role) { prompt.classList.remove('visible'); return; }
     const station = state.view ? null : nearestStation();
     const near = state.view || riding ? null : nearestVehicle();

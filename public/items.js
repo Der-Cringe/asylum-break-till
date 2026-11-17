@@ -343,6 +343,23 @@
       throwRange: 12, flight: 0.7, fuse: 1, cooldown: 1,
       effect: { type: 'shock', radius: 4.5, stun: 3.5 },
     },
+    // Devices are set down (or launched) and then act on their own until their time or health runs out.
+    combatDrone: {
+      name: 'Combat Drone', kind: 'device', team: 'staff', roles: ['orderly'], color: 0x2c3540, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'combatDrone', life: 40, hp: 40, follow: true, every: 2.5, range: 12, stun: 1.5 },
+    },
+    reconDrone: {
+      name: 'Recon Drone', kind: 'device', team: 'staff', color: 0x3a6fb0, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'reconDrone', life: 30, hp: 25, every: 1, radius: 18, reveal: true },
+    },
+    therapyTurret: {
+      name: 'Therapy Turret', kind: 'device', team: 'staff', roles: ['medic'], color: 0xeef6fb, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'therapyTurret', life: 30, hp: 50, every: 1, radius: 8, heal: 6 },
+    },
+    hostileDetector: {
+      name: 'Hostile Detector', kind: 'reveal', team: 'staff', roles: ['director'], color: 0x9670d5, electric: true,
+      cooldown: 30, duration: 6, // Shows every patient in the building, through walls.
+    },
     combatVest: {
       name: 'Combat Vest', kind: 'wear', team: 'staff', color: 0x3b4a3a, uses: 1, cooldown: 1,
       armor: 0.7, // Takes 30% less damage until knocked out.
@@ -395,7 +412,7 @@
     cardboardBox: 50, pottedShrub: 60, gasMask: 70, nightVision: 140, flashlight: 30, stolenRadio: 90, paintbrush: 20, keycard: 250,
     shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
     netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
-    straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
+    straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatDrone: 160, reconDrone: 120, therapyTurret: 130, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
     coffee: 10, tea: 5, bread: 10, mango: 20, candy: 10, energySoda: 25, smallMedicalKit: 25, mediumMedicalKit: 45,
     tomato: 5, snowball: 5,
   };

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-5';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-6';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
-import { createWorld } from './world.js?v=20261117-7';
+import { createWorld } from './world.js?v=20261117-8';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -11,7 +11,7 @@ const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
   orderly: { name: 'Orderly', color: 0x2878d0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
   medic: { name: 'Medic', color: 0x35b987, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'], ability: 'Field treatment', maxHealth: 100 },
-  director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
+  director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet', 'hostileDetector'], ability: 'Override access', maxHealth: 100 },
   patient: { name: 'Patient', color: 0xc85953, items: ['glassShard', 'shove'], ability: 'Adrenaline', maxHealth: 100 },
 };
 for (const [role, def] of Object.entries(ROLES)) Object.assign(def, LAYOUT.SPAWNS[role]);
@@ -748,7 +748,7 @@ if (socket) {
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
-const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors, scene, lights: [[hemiLight, 1.75], [ambientLight, 0.35], [keyLight, 1.6]], glowing: MAINS_LIGHTING });
+const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors, scene, makeItemModel, actorFor: id => remoteActors.get(id), lights: [[hemiLight, 1.75], [ambientLight, 0.35], [keyLight, 1.6]], glowing: MAINS_LIGHTING });
 
 // Which rooms on this floor hold the stairs up and the openings down.
 function updateStairHint() {

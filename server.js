@@ -26,7 +26,7 @@ const INVENTORIES = {
   patient: ['glassShard', 'shove'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'],
   orderly: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'],
-  director: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'],
+  director: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet', 'hostileDetector'],
 };
 const MAX_HEALTH = { patient: 100, medic: 100, orderly: 115, director: 100 };
 const ROLE_LIMITS = { director: 1 };
@@ -55,6 +55,8 @@ const players = new Map();
 const sessions = new Map(); // session token -> { player, expires } for players that dropped connection
 const zones = new Map(); // id -> fire, gas, healing and jammer areas
 const mines = new Map(); // id -> placed floor mines
+const devices = new Map(); // id -> drones and turrets
+let devicesDirty = false;
 const pickups = PICKUP_SPOTS.map((spot, id) => ({ id, ...spot, item: null, respawnAt: 0 }));
 const doors = SECURE_DOORS.map(def => ({ ...def, hp: DOOR.hp, brokenUntil: 0, weldedUntil: 0, open: false }));
 let doorsDirty = true;
@@ -329,6 +331,11 @@ function detonate(owner, floor, x, z, fx) {
     effect({ type: 'zone', id, kind: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
     return;
   }
+  if (fx.maxDamage || fx.type === 'shock') {
+    for (const device of devices.values()) {
+      if (device.floor === floor && hostile(owner, device.owner) && Math.hypot(device.x - x, device.z - z) <= fx.radius) damageDevice(device, fx.maxDamage || 25);
+    }
+  }
   if (fx.maxDamage) {
     for (const door of doors) {
       if (door.floor === floor && !isBroken(door) && Math.hypot(door.x - x, door.z - z) <= fx.radius + 1) damageDoor(door, fx.maxDamage, players.get(owner.id) ?? null);
@@ -361,6 +368,7 @@ const USE_HANDLERS = {
     effect({ type: 'swing', by: player.id });
     const targets = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other));
     for (const target of targets) meleeHit(player, target, def);
+    for (const device of devicesInFront(player, def.range, def.arc)) damageDevice(device, def.damage * power(player));
     // Patients with nobody to hit batter the security door in front of them instead.
     if (!targets.length && teamOf(player.role) === 'patient') {
       const door = doorInFront(player, def.range + 1);
@@ -477,6 +485,22 @@ const USE_HANDLERS = {
         detonate(owner, at.floor, at.x, at.z, def.effect);
       }, (def.fuse ?? 0) * 1000);
     }, def.flight * 1000);
+    return true;
+  },
+  device(player, def) {
+    const dir = facing(player), spec = def.device, id = nextEntityId++;
+    devices.set(id, {
+      id, type: spec.type, spec, owner: ownerSnapshot(player), floor: player.floor, x: player.x + dir.x * 1.5, z: player.z + dir.z * 1.5,
+      hp: spec.hp, until: Date.now() + spec.life * 1000, nextAt: Date.now() + 500,
+    });
+    devicesDirty = true;
+    return true;
+  },
+  // Shows the user's whole team where every enemy is, through walls, for a few seconds.
+  reveal(player, def) {
+    const targets = [...players.values()].filter(other => hostile(player, other) && !isDown(other));
+    revealTo(teamOf(player.role), targets, def.duration);
+    notify(player, `${targets.length} hostile${targets.length === 1 ? '' : 's'} located`);
     return true;
   },
   // Sets a zone down right where the user stands.
@@ -618,6 +642,77 @@ function tryPickup(player) {
 function pickupList() {
   return pickups.filter(pickup => pickup.item).map(({ id, floor, x, z, item }) => ({ id, floor, x, z, item }));
 }
+
+// ---- Devices -------------------------------------------------------------------------------------
+
+function devicesInFront(player, range, arc) {
+  const dir = facing(player);
+  return [...devices.values()].filter(device => {
+    if (device.floor !== player.floor || !hostile(player, device.owner)) return false;
+    const dx = device.x - player.x, dz = device.z - player.z, distance = Math.hypot(dx, dz);
+    return distance <= range + 0.5 && (distance < 0.5 || Math.acos(Math.max(-1, Math.min(1, (dx * dir.x + dz * dir.z) / distance))) <= arc / 2);
+  });
+}
+function damageDevice(device, amount) {
+  device.hp -= amount;
+  effect({ type: 'hit', x: device.x, z: device.z, floor: device.floor });
+  if (device.hp <= 0) removeDevice(device, true);
+}
+function removeDevice(device, destroyed) {
+  devices.delete(device.id);
+  devicesDirty = true;
+  if (destroyed) effect({ type: 'explosion', x: device.x, z: device.z, floor: device.floor, radius: 1.4 });
+  const owner = players.get(device.owner.id);
+  if (owner) notify(owner, `${ITEMS[device.type].name} ${destroyed ? 'destroyed' : 'powered down'}`);
+}
+function revealTo(team, targets, seconds) {
+  const list = targets.map(({ id, floor, x, z }) => ({ id, floor, x, z }));
+  for (const player of players.values()) if (teamOf(player.role) === team) io.to(player.id).emit('reveal', { targets: list, duration: seconds });
+}
+function updateDevices(now) {
+  for (const device of devices.values()) {
+    if (now >= device.until) { removeDevice(device, false); continue; }
+    const spec = device.spec, owner = players.get(device.owner.id);
+    // Combat drones hover off their owner's shoulder.
+    if (spec.follow && owner && !isDown(owner, now)) {
+      const dir = facing(owner);
+      const x = owner.x - dir.z * 1.6, z = owner.z + dir.x * 1.6;
+      if (device.floor !== owner.floor || Math.hypot(device.x - x, device.z - z) > 0.05) { Object.assign(device, { floor: owner.floor, x, z }); devicesDirty = true; }
+    }
+    if (now < device.nextAt) continue;
+    device.nextAt = now + spec.every * 1000;
+    const near = other => other.floor === device.floor && !isDown(other, now) && !wallBetween(device.floor, device.x, device.z, other.x, other.z);
+    if (spec.stun) {
+      let target = null, best = spec.range;
+      for (const other of players.values()) {
+        const distance = Math.hypot(other.x - device.x, other.z - device.z);
+        if (hostile(device.owner, other) && near(other) && distance < best) { target = other; best = distance; }
+      }
+      if (target) {
+        effect({ type: 'ray', floor: device.floor, x1: device.x, z1: device.z, x2: target.x, z2: target.z, color: 0xff3b2f });
+        if (!jammedAt(device, target)) stun(target, spec.stun);
+      }
+    }
+    if (spec.reveal) {
+      const spotted = [...players.values()].filter(other => hostile(device.owner, other) && other.floor === device.floor && !isDown(other, now)
+        && Math.hypot(other.x - device.x, other.z - device.z) <= spec.radius);
+      if (spotted.length) revealTo(teamOf(device.owner.role), spotted, spec.every + 0.6);
+    }
+    if (spec.heal) {
+      for (const other of players.values()) {
+        if (!allied(device.owner, other) || !near(other) || other.health >= other.maxHealth || Math.hypot(other.x - device.x, other.z - device.z) > spec.radius) continue;
+        other.health = Math.min(other.maxHealth, other.health + spec.heal);
+        effect({ type: 'heal', x: other.x, z: other.z, floor: other.floor });
+        sendSelf(other);
+      }
+    }
+  }
+  if (devicesDirty) { devicesDirty = false; io.emit('devices', deviceList()); }
+}
+// A drone flying into an enemy jammer loses its sting.
+const jammedAt = (device, _target) => [...zones.values()].some(zone => zone.kind === 'jam' && zone.floor === device.floor
+  && zone.ownerTeam !== teamOf(device.owner.role) && Math.hypot(zone.x - device.x, zone.z - device.z) <= zone.radius);
+const deviceList = () => [...devices.values()].map(({ id, type, floor, x, z, hp, spec }) => ({ id, type, floor, x, z, health: hp / spec.hp }));
 
 // ---- Chat and radio --------------------------------------------------------------------------------
 
@@ -940,6 +1035,7 @@ setInterval(() => {
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   updateDoors(now);
   updateVehicles(now, TICK_MS / 1000);
+  updateDevices(now);
   if (blackoutUntil && blackoutUntil <= now) setBlackout(0);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
@@ -1004,6 +1100,7 @@ io.on('connection', socket => {
   socket.emit('doors', doorList());
   socket.emit('world', worldState());
   socket.emit('vehicles', vehicleList());
+  socket.emit('devices', deviceList());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
   for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 
