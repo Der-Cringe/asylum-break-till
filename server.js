@@ -87,7 +87,11 @@ const canUse = (player, item) => {
   if (!def || (def.team !== 'all' && def.team !== teamOf(player.role))) return false;
   return !def.roles || def.roles.includes(player.role);
 };
-const hostile = (a, b) => a !== b && teamOf(a.role) !== teamOf(b.role);
+// Patients fight staff and can also attack each other; staff never hit staff.
+// `a` and `b` may be players or owner snapshots of players, so they are compared by id.
+const hostile = (a, b) => a.id !== b.id && (teamOf(a.role) !== teamOf(b.role) || (a.role === 'patient' && b.role === 'patient'));
+// Healing, buffs and healing mist go by team, so patients can still team up and patch each other up.
+const allied = (a, b) => teamOf(a.role) === teamOf(b.role);
 const isDown = (player, now = Date.now()) => player.downUntil > now;
 const isStunned = (player, now = Date.now()) => player.stunUntil > now || player.holdUntil > now || isDown(player, now);
 // Rooted players (netted) cannot walk, but can still use items.
@@ -311,7 +315,7 @@ function detonate(owner, floor, x, z, fx) {
   effect({ type: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
   if (ZONE_TYPES.has(fx.type)) {
     const id = nextEntityId++;
-    zones.set(id, { id, kind: fx.type, owner: owner.id, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, hps: fx.hps, until: Date.now() + fx.duration * 1000 });
+    zones.set(id, { id, kind: fx.type, owner: owner.id, ownerSnapshot: owner, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, hps: fx.hps, until: Date.now() + fx.duration * 1000 });
     effect({ type: 'zone', id, kind: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
     return;
   }
@@ -393,12 +397,12 @@ const USE_HANDLERS = {
     for (const other of players.values()) {
       if (other.floor !== player.floor || isDown(other) || Math.hypot(other.x - player.x, other.z - player.z) > def.radius) continue;
       if (other !== player && wallBetween(player.floor, player.x, player.z, other.x, other.z)) continue;
-      if (hostile(player, other)) {
-        if (def.stun) stun(other, def.stun);
-        if (def.slow) slow(other, def.slow);
-      } else if (def.ally) {
+      if (def.ally && allied(player, other)) {
         boost(other, def.ally.speed, def.ally.duration);
         if (other !== player) notify(other, `${player.name} rallies you`);
+      } else if (hostile(player, other)) {
+        if (def.stun) stun(other, def.stun);
+        if (def.slow) slow(other, def.slow);
       }
     }
     return true;
@@ -538,7 +542,7 @@ const USE_HANDLERS = {
     return true;
   },
   heal(player, def) {
-    const [target] = targetsInFront(player, def.range, def.arc, other => !hostile(player, other) && !isDown(other) && other.health < other.maxHealth);
+    const [target] = targetsInFront(player, def.range, def.arc, other => allied(player, other) && !isDown(other) && other.health < other.maxHealth);
     const patient = target || player;
     if (patient.health >= patient.maxHealth) { notify(player, 'Nobody here needs healing'); return false; }
     patient.health = Math.min(patient.maxHealth, patient.health + def.heal);
@@ -798,15 +802,16 @@ setInterval(() => {
     player.jammed = false;
     for (const zone of zones.values()) {
       if (player.floor !== zone.floor || Math.hypot(player.x - zone.x, player.z - zone.z) > zone.radius) continue;
-      const enemyZone = teamOf(player.role) !== zone.ownerTeam;
+      // Fire and gas hurt whoever is hostile to the thrower; healing mist and jammers go by team.
+      const enemyZone = hostile(zone.ownerSnapshot, player), enemyTeam = teamOf(player.role) !== zone.ownerTeam;
       if (zone.kind === 'fire' && enemyZone) damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
       else if (zone.kind === 'gas' && enemyZone && !player.mask) {
         damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
         player.slowUntil = Math.max(player.slowUntil, now + 600);
-      } else if (zone.kind === 'healing' && !enemyZone && !isDown(player, now) && player.health < player.maxHealth) {
+      } else if (zone.kind === 'healing' && !enemyTeam && !isDown(player, now) && player.health < player.maxHealth) {
         player.health = Math.min(player.maxHealth, player.health + zone.hps * TICK_MS / 1000);
         sendSelf(player);
-      } else if (zone.kind === 'jam' && enemyZone) player.jammed = true;
+      } else if (zone.kind === 'jam' && enemyTeam) player.jammed = true;
     }
     // Carried players ride on the carrier's shoulders.
     if (player.carrying) {
