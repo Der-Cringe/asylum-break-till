@@ -22,10 +22,26 @@
     patient: { floor: 2, x: -26, z: -9 }, // in cell WS3
   };
 
-  // Loot spots. Patient loot sits in patient areas, staff loot in staff rooms.
+  // Loot spots. Patient loot sits in patient areas, staff loot in staff rooms, snacks in the corridors.
+  // Pools may list an item more than once to make it more common.
   const LOOT = {
-    patient: ['glassShard', 'tableLeg', 'tableLeg', 'fireBottle', 'pipeBomb', 'floorMine', 'stolenScrubs', 'energySoda', 'coffee'],
-    staff: ['coffee', 'energySoda', 'fireExtinguisher', 'flashGrenade', 'smallMedicalKit'],
+    patient: [
+      'glassShard', 'tableLeg', 'tableLeg', 'scrapMetal', 'scrapMetal', 'crowbar', 'glassBlade', 'woodenBat', 'steelBat',
+      'crutch', 'pipeSword', 'fireAxe', 'rebarHammer', 'fireBottle', 'pipeBomb', 'nailBomb', 'stickyBomb', 'floorMine',
+      'shoulderCharge', 'scream', 'rallyFlag', 'berserkPills', 'adrenalineShot', 'stolenScrubs', 'orderlyUniform',
+      'directorSuit', 'cardboardBox', 'pottedShrub', 'gasMask', 'gasMask', 'signalJammer',
+    ],
+    staff: [
+      'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
+      'barrierShield', 'heavyShield', 'taserRifle', 'stunPistol', 'laserPistol', 'pepperballGun', 'netLauncher',
+      'shockLasso', 'proximityTaser', 'flashGrenade', 'empGrenade', 'chargedEmp', 'gasGrenade', 'empLauncher',
+      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher',
+    ],
+    medical: [
+      'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',
+      'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol',
+    ],
+    common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit'],
   };
   const PICKUPS = [
     { floor: 2, x: -30, z: 34, pool: 'patient' }, { floor: 2, x: 60, z: 28, pool: 'patient' },
@@ -34,9 +50,16 @@
     { floor: 2, x: 72, z: -50, pool: 'patient' },
     { floor: 1, x: -64, z: 40, pool: 'patient' }, { floor: 1, x: 50, z: -48, pool: 'patient' },
     { floor: 0, x: -48, z: 16, pool: 'patient' }, { floor: 0, x: 30, z: 52, pool: 'patient' },
-    { floor: 1, x: -22, z: 16, pool: 'staff' }, { floor: 1, x: -20, z: -50, pool: 'staff' },
+    { floor: 1, x: -22, z: 16, pool: 'medical' }, { floor: 1, x: -20, z: -50, pool: 'medical' },
     { floor: 1, x: 24, z: 14, pool: 'staff' }, { floor: 0, x: 22, z: -36, pool: 'staff' },
     { floor: 0, x: 0, z: 30, pool: 'staff' },
+    // Corridors.
+    { floor: 2, x: -60, z: 0, pool: 'patient' }, { floor: 2, x: 60, z: 0, pool: 'patient' },
+    { floor: 2, x: 0, z: -25, pool: 'common' }, { floor: 2, x: 0, z: 25, pool: 'common' },
+    { floor: 1, x: -30, z: 0, pool: 'medical' }, { floor: 1, x: 30, z: 0, pool: 'common' },
+    { floor: 1, x: 0, z: -45, pool: 'staff' }, { floor: 1, x: 0, z: 45, pool: 'patient' },
+    { floor: 0, x: -60, z: 0, pool: 'staff' }, { floor: 0, x: 60, z: 0, pool: 'patient' },
+    { floor: 0, x: 0, z: -25, pool: 'common' }, { floor: 0, x: 0, z: 25, pool: 'staff' },
   ];
 
   // Security cameras for the director's tablet: mounted at (x, z) under the ceiling, looking at (tx, tz).
