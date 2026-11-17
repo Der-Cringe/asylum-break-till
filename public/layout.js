@@ -501,8 +501,74 @@
     ...Object.values(SPAWNS).filter(spawn => spawn.floor === floor),
     ...PICKUPS.filter(spot => spot.floor === floor),
     ...STATIONS.filter(spot => spot.floor === floor),
+    // The main corridor carries on straight through both end halls: a staircase there would stand in
+    // everyone's way, so it goes along a hall's side wall instead.
+    ...[-1, 1].flatMap(side => [69, 73, 77, 81, 85].flatMap(x => [-3, 1].map(z => ({ x: side * x, z })))),
   ]);
   const roomOf = (floor, box) => rooms[floor].find(r => r.style !== 'corridor' && within(box, r, 0.4));
+
+  // Walkability on a half-unit grid (with a comfortable 2-unit wide berth, not just a squeeze), so a
+  // staircase is only accepted if it cuts nothing off: every
+  // doorway, spawn, loot spot and station that could be reached before must still be reachable from
+  // the corridor crossing, and so must both ends of every staircase.
+  const GRID = 0.5, GRID_X = Math.ceil(180 / GRID), GRID_Z = Math.ceil(132 / GRID), REACH_RADIUS = 1;
+  function stampBox(grid, box, margin = REACH_RADIUS) {
+    const i0 = Math.max(0, Math.floor((box.minX - margin + 90) / GRID)), i1 = Math.min(GRID_X - 1, Math.floor((box.maxX + margin + 90) / GRID));
+    const j0 = Math.max(0, Math.floor((box.minZ - margin + 66) / GRID)), j1 = Math.min(GRID_Z - 1, Math.floor((box.maxZ + margin + 66) / GRID));
+    for (let i = i0; i <= i1; i++) grid.fill(1, i * GRID_Z + j0, i * GRID_Z + j1 + 1);
+  }
+  const baseGrids = furniture.map((list, floor) => {
+    const grid = new Uint8Array(GRID_X * GRID_Z);
+    for (const box of wallBoxes[floor]) stampBox(grid, box);
+    for (const item of list) if (!['rug', 'mat', 'chair', 'deskChair', 'monitor', 'trays', 'curtain', 'surgicalLamp', 'ivStand', 'coffeeMachine', 'nightstand', 'bucket', 'whiteboard', 'tv'].includes(item.type)) {
+      const box = footprint(item); if (box) stampBox(grid, box);
+    }
+    return grid;
+  });
+  // On its own floor a staircase blocks everything but its foot; on the floor above, its hole does.
+  function stampStair(grid, floor, stair) {
+    const wide = STAIR.width / 2 + STAIR.rail;
+    if (stair.floor === floor) stampBox(grid, stairBox(stair, 0.5, STAIR.run + 0.3, -wide, wide));
+    if (stair.floor + 1 === floor) stampBox(grid, stairBox(stair, -STAIR.rail - 0.3, STAIR.run - STAIR.entry, -wide, wide));
+  }
+  function reachable(floor, stairs) {
+    const grid = baseGrids[floor].slice();
+    for (const stair of stairs) stampStair(grid, floor, stair);
+    const seen = new Uint8Array(GRID_X * GRID_Z), stack = [];
+    const start = Math.floor(90 / GRID) * GRID_Z + Math.floor(66 / GRID);
+    if (!grid[start]) { seen[start] = 1; stack.push(start); }
+    while (stack.length) {
+      const k = stack.pop(), i = Math.floor(k / GRID_Z), j = k % GRID_Z;
+      for (const kk of [i > 0 ? k - GRID_Z : -1, i < GRID_X - 1 ? k + GRID_Z : -1, j > 0 ? k - 1 : -1, j < GRID_Z - 1 ? k + 1 : -1]) {
+        if (kk >= 0 && !grid[kk] && !seen[kk]) { seen[kk] = 1; stack.push(kk); }
+      }
+    }
+    // A spot counts as reachable when you can get within 1.5 of it.
+    return (x, z) => {
+      for (let dx = -1.5; dx <= 1.5; dx += GRID) for (let dz = -1.5; dz <= 1.5; dz += GRID) {
+        const i = Math.floor((x + dx + 90) / GRID), j = Math.floor((z + dz + 66) / GRID);
+        if (i >= 0 && j >= 0 && i < GRID_X && j < GRID_Z && seen[i * GRID_Z + j]) return true;
+      }
+      return false;
+    };
+  }
+  const centre = box => ({ x: (box.minX + box.maxX) / 2, z: (box.minZ + box.maxZ) / 2 });
+  const stairFoot = stair => centre(stairBox(stair, -2, -1, -0.5, 0.5));
+  const stairTop = stair => centre(stairBox(stair, STAIR.run + 1, STAIR.run + 2, -0.5, 0.5));
+  const mustReach = FLOOR_Y.map((_, floor) => [
+    ...walls[floor].flatMap(w => w.doors.filter(door => !door.closed).map(door => (w.z1 === w.z2 ? { x: door.at, z: w.z1 } : { x: w.x1, z: door.at }))),
+    ...Object.values(SPAWNS).filter(spot => spot.floor === floor),
+    ...PICKUPS.filter(spot => spot.floor === floor),
+    ...STATIONS.filter(spot => spot.floor === floor),
+  ]);
+  // Targets on `floor` that are reachable with `stairs` in place, including the stairs' own ends.
+  function cutsNothingOff(floor, stairs, candidate) {
+    const before = reachable(floor, stairs), after = reachable(floor, [...stairs, candidate]);
+    const ends = [...stairs, candidate].flatMap(stair => [
+      ...(stair.floor === floor ? [stairFoot(stair)] : []), ...(stair.floor + 1 === floor ? [stairTop(stair)] : []),
+    ]);
+    return mustReach[floor].every(p => !before(p.x, p.z) || after(p.x, p.z)) && ends.every(p => after(p.x, p.z));
+  }
   const STAIRS = [];
   {
     const rand = random(SEED);
@@ -530,6 +596,7 @@
           const bottomRoom = roomOf(floor, body), topRoom = roomOf(floor + 1, body);
           if (bottomRoom !== r || !topRoom || !roomOf(floor, foot) || !roomOf(floor + 1, landing)) continue;
           if (!fits(floor, body) || !fits(floor, foot) || !fits(floor + 1, body) || !fits(floor + 1, landing)) continue;
+          if (!cutsNothingOff(floor, STAIRS, stair) || !cutsNothingOff(floor + 1, STAIRS, stair)) continue;
           stair.from = bottomRoom.name; stair.to = topRoom.name;
           STAIRS.push(stair);
           taken[floor].push(body, foot);
