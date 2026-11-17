@@ -289,11 +289,18 @@ export function createWorld(ctx) {
     chatForm.classList.remove('open');
     chatInput.blur();
   }
+  function switchChannel() {
+    channel = channel === 'all' ? 'team' : 'all';
+    chatChannel.textContent = channelName();
+  }
   chatInput.addEventListener('keydown', event => {
     event.stopPropagation();
     if (event.key === 'Escape') closeChat();
-    if (event.key === 'Tab') { event.preventDefault(); channel = channel === 'all' ? 'team' : 'all'; chatChannel.textContent = channelName(); }
+    if (event.key === 'Tab') { event.preventDefault(); switchChannel(); }
   });
+  // On phones there is no Tab key: tap the channel label instead (without closing the keyboard).
+  chatChannel.addEventListener('pointerdown', event => { event.preventDefault(); switchChannel(); chatInput.focus(); });
+  chatInput.addEventListener('blur', () => { if (!chatInput.value.trim()) chatForm.classList.remove('open'); });
   chatForm.addEventListener('submit', event => {
     event.preventDefault();
     const text = chatInput.value.trim();

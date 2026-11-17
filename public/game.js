@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-6';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
-import { createWorld } from './world.js?v=20261117-8';
+import { createWorld } from './world.js?v=20261117-9';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
