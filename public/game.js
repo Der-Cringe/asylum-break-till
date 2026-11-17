@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261115-4';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-1';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior } from './interior.js?v=20261115-3';
 
@@ -9,9 +9,9 @@ const LAYOUT = window.LAYOUT;
 const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
   orderly: { name: 'Orderly', color: 0x2878d0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
-  medic: { name: 'Medic', color: 0x35b987, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'], ability: 'Field treatment', maxHealth: 100 },
+  medic: { name: 'Medic', color: 0x35b987, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'], ability: 'Field treatment', maxHealth: 100 },
   director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
-  patient: { name: 'Patient', color: 0xc85953, items: ['glassShard'], ability: 'Adrenaline', maxHealth: 100 },
+  patient: { name: 'Patient', color: 0xc85953, items: ['glassShard', 'shove'], ability: 'Adrenaline', maxHealth: 100 },
 };
 for (const [role, def] of Object.entries(ROLES)) Object.assign(def, LAYOUT.SPAWNS[role]);
 // Floors, staircases and the building itself come from layout.js, which the server shares.
@@ -31,7 +31,8 @@ const state = {
   role: null, id: null, x: 0, z: 0, floor: 0, yaw: 0, pitch: CAMERA.third.pitch, actor: null, health: 100, maxHealth: 100, items: [], equipped: null, view: null,
   cameraMode: storedCameraMode === 'first' ? 'first' : 'third', zoom: CAMERA.third.distance, cameraDistance: CAMERA.third.distance,
   // Combat status from the server, converted to local performance.now() deadlines.
-  stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, look: null,
+  stunnedUntil: 0, downUntil: 0, slowedUntil: 0, rootedUntil: 0, ragingUntil: 0, boostedUntil: 0, speed: 1, look: null,
+  jammed: false, armor: false, mask: false, carrying: false, carried: false,
   // Height of the steps underfoot, and how far above them a jump has taken you.
   ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false,
 };
@@ -169,9 +170,32 @@ function blocked(x, z, floor) {
   return colliders[floor].some(box => x + PLAYER_RADIUS > box.minX && x - PLAYER_RADIUS < box.maxX && z + PLAYER_RADIUS > box.minZ && z - PLAYER_RADIUS < box.maxZ);
 }
 
+// Patients hiding as a box or a shrub. Props still need the arm and hand a character has, so the
+// usual animation and held-item code keeps working; both just stay hidden.
+const PROPS = {
+  box: root => {
+    addBox(root, 0, 1.1, 0, 2.2, 2.2, 2.2, 0xb98a55);
+    addBox(root, 0, 2.21, 0, 2.22, 0.02, 0.3, 0xd8c08f, { castShadow: false });
+    addBox(root, 0.6, 1.4, 1.11, 0.6, 0.4, 0.02, 0x8a6236, { castShadow: false });
+  },
+  bush: root => {
+    addBox(root, 0, 0.5, 0, 1.3, 1, 1.3, 0x9a5b3a);
+    addBox(root, 0, 1.7, 0, 2, 1.6, 2, 0x3f8f46);
+    addBox(root, 0.3, 2.7, -0.2, 1.3, 0.9, 1.3, 0x4fa357);
+    addBox(root, -0.5, 2.3, 0.4, 0.9, 0.8, 0.9, 0x357a3c);
+  },
+};
+function makeProp(kind) {
+  const root = new THREE.Group();
+  PROPS[kind](root);
+  const arm = new THREE.Group(); arm.visible = false; root.add(arm);
+  const hand = new THREE.Group(); arm.add(hand);
+  Object.assign(root.userData, { arm, hand, height: kind === 'bush' ? 3.2 : 2.2, prop: true });
+  return root;
+}
 function makeCharacter(roleKey) {
-  const model = buildCharacterModel(roleKey);
-  const root = model ? model.root : makeBlockCharacter(roleKey);
+  const model = PROPS[roleKey] ? null : buildCharacterModel(roleKey);
+  const root = PROPS[roleKey] ? makeProp(roleKey) : model ? model.root : makeBlockCharacter(roleKey);
   if (model) Object.assign(root.userData, model);
   root.userData.role = roleKey;
   root.userData.height ??= 3.2;
@@ -261,9 +285,12 @@ function applyActorStatus(actor, status) {
     else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
   }
   actor.userData.down = Boolean(status.down);
+  actor.userData.carried = Boolean(status.carried);
   actor.userData.stars.visible = Boolean(status.stunned) && !status.down;
+  actor.userData.raging = Boolean(status.raging);
   if (Number.isFinite(status.health) && Number.isFinite(status.maxHealth) && actor !== state.actor) {
-    const hurt = status.health < status.maxHealth && !status.down;
+    // A hurt prop would give itself away with a health bar.
+    const hurt = status.health < status.maxHealth && !status.down && !actor.userData.prop;
     const bar = healthBar(actor); bar.visible = hurt;
     const ratio = Math.max(0, status.health / status.maxHealth);
     bar.userData.fill.scale.set(1.6 * ratio, 0.16, 1);
@@ -295,7 +322,9 @@ function animateActor(actor, dt, baseY) {
   if (data.armL) data.armL.rotation.x = -swingAngle - idle;
   if (data.legR) { data.legR.rotation.x = -swingAngle; data.legL.rotation.x = swingAngle; }
   if (data.head) data.head.rotation.y = data.stars.visible ? Math.sin(data.time * 6) * 0.25 : 0;
-  actor.rotation.x = data.down ? -Math.PI / 2 : 0;
+  // Carried players hang over the carrier's shoulder; berserk players shake with anger.
+  actor.rotation.x = data.down ? -Math.PI / 2 : data.carried ? -Math.PI / 2.4 : 0;
+  if (data.raging && !data.down) actor.rotation.z = Math.sin(data.time * 40) * 0.03; else actor.rotation.z = 0;
   actor.position.y = baseY + (data.down ? 0.45 : Math.abs(Math.sin(data.phase)) * 0.08 * data.stride);
   if (data.stars.visible) data.stars.rotation.y += dt * 5;
   if (data.bar?.visible) data.bar.quaternion.copy(actor.getWorldQuaternion(barQuaternion).invert().multiply(camera.quaternion));
@@ -532,7 +561,8 @@ function useItem() {
   if (slot && slot.readyAt > performance.now()) return;
   if (!socket?.connected) { showNotice('Items need the server connection'); return; }
   // Swing immediately so melee feels responsive; the server decides what it hit.
-  if (def.kind === 'melee') state.actor.userData.swing = 0.3;
+  if (def.kind === 'melee' || def.kind === 'push') state.actor.userData.swing = 0.3;
+  if (def.electric && state.jammed) { showNotice('Signal jammed · electronics are down here'); return; }
   socket.emit('useItem', { yaw: state.yaw });
 }
 function applySelfState(data) {
@@ -544,7 +574,15 @@ function applySelfState(data) {
   state.stunnedUntil = now + (Number(data.stunned) || 0);
   state.downUntil = now + (Number(data.down) || 0);
   state.slowedUntil = now + (Number(data.slowed) || 0);
+  state.rootedUntil = now + (Number(data.rooted) || 0);
+  state.ragingUntil = now + (Number(data.raging) || 0);
+  state.boostedUntil = now + (Number(data.boosted) || 0);
   state.speed = Number(data.speed) || 1;
+  for (const flag of ['armor', 'mask', 'carrying', 'carried']) state[flag] = Boolean(data[flag]);
+  const wasJammed = state.jammed;
+  state.jammed = Boolean(data.jammed);
+  // Security cameras go dark inside an enemy jammer.
+  if (state.jammed && !wasJammed && state.view) { setView(null); showNotice('Signal jammed · cameras offline'); }
   if (!wasDown && isDown()) showNotice('Knocked out · respawning');
   const look = data.look ?? null;
   if (look !== state.look && state.role) {
@@ -555,21 +593,32 @@ function applySelfState(data) {
     state.actor.userData.item = undefined;
     syncViewModel();
   }
-  if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown() });
+  if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown(), raging: now < state.ragingUntil, carried: state.carried });
   updateStatusEffect();
 }
 function updateStatusEffect() {
   const now = performance.now();
   const element = document.getElementById('statusEffect');
   let text = '';
-  if (now < state.downUntil) text = `Knocked out · ${Math.ceil((state.downUntil - now) / 1000)}s`;
-  else if (now < state.stunnedUntil) text = `Stunned · ${Math.ceil((state.stunnedUntil - now) / 1000)}s`;
-  else if (now < state.slowedUntil) text = 'Slowed';
-  else if (state.speed > 1) text = 'Speed boost';
-  else if (state.look) text = 'Disguised';
+  const seconds = until => `${Math.ceil((until - now) / 1000)}s`;
+  const bad = [], good = [];
+  if (now < state.downUntil) bad.push(`Knocked out · ${seconds(state.downUntil)}`);
+  else if (state.carried) bad.push('Being carried');
+  else if (now < state.stunnedUntil) bad.push(`Stunned · ${seconds(state.stunnedUntil)}`);
+  if (now < state.rootedUntil) bad.push(`Netted · ${seconds(state.rootedUntil)}`);
+  if (now < state.slowedUntil) bad.push('Slowed');
+  if (state.jammed) bad.push('Jammed');
+  if (now < state.ragingUntil) good.push(`Berserk · ${seconds(state.ragingUntil)}`);
+  if (now < state.boostedUntil) good.push('Speed boost');
+  if (state.carrying) good.push('Carrying');
+  if (state.look === 'box' || state.look === 'bush') good.push('Hidden');
+  else if (state.look) good.push('Disguised');
+  if (state.armor) good.push('Vest');
+  if (state.mask) good.push('Gas mask');
+  const text = [...bad, ...good].join(' · ');
   if (element.textContent !== text) element.textContent = text;
   element.classList.toggle('visible', Boolean(text));
-  element.classList.toggle('bad', now < Math.max(state.downUntil, state.stunnedUntil, state.slowedUntil));
+  element.classList.toggle('bad', bad.length > 0);
 }
 function setView(preset) {
   state.view = preset;
@@ -584,7 +633,10 @@ function renderCameraPresets() {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'camera-preset';
     button.dataset.label = preset?.label ?? 'live';
     button.textContent = preset?.label ?? 'Live';
-    button.addEventListener('click', () => setView(preset));
+    button.addEventListener('click', () => {
+      if (preset && state.jammed) { showNotice('Signal jammed · cameras offline'); return; }
+      setView(preset);
+    });
     host.appendChild(button);
   }
 }
@@ -593,7 +645,10 @@ renderCameraPresets();
 function chooseRole(roleKey) {
   const role = ROLES[roleKey]; if (!role) return;
   state.role = roleKey; state.x = role.x; state.z = role.z;
-  Object.assign(state, { look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, speed: 1, slotSignature: null, air: 0, vy: 0 });
+  Object.assign(state, {
+    look: null, stunnedUntil: 0, downUntil: 0, slowedUntil: 0, rootedUntil: 0, ragingUntil: 0, boostedUntil: 0, speed: 1, slotSignature: null, air: 0, vy: 0,
+    jammed: false, armor: false, mask: false, carrying: false, carried: false,
+  });
   state.actor?.parent?.remove(state.actor);
   state.actor = makeCharacter(roleKey); scene.add(state.actor);
   syncViewModel();
@@ -802,11 +857,12 @@ function animate() {
     let sideways = Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
     if (joystick.active) { forward = -joystick.y; sideways = joystick.x; }
     const length = Math.hypot(forward, sideways); if (length > 1) { forward /= length; sideways /= length; }
-    // Stunned or knocked-out players cannot move; the server ignores their position updates anyway.
-    if (isStunned()) { forward = 0; sideways = 0; }
-    const slowed = now < state.slowedUntil, boosted = state.speed > 1 && !slowed;
+    // Stunned, netted, carried or knocked-out players cannot move; the server ignores their position updates anyway.
+    const held = isStunned() || now < state.rootedUntil || state.carried;
+    if (held) { forward = 0; sideways = 0; }
     const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting;
-    const speed = (sprinting ? 14 : 8) * (slowed ? 0.55 : 1) * (boosted ? state.speed : 1);
+    // The server's multiplier already covers slows, boosts, carrying and hiding in a prop.
+    const speed = (sprinting ? 14 : 8) * state.speed;
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
     const stepX = (-Math.sin(state.yaw) * forward + Math.cos(state.yaw) * sideways) * speed * dt;
     const stepZ = (-Math.cos(state.yaw) * forward - Math.sin(state.yaw) * sideways) * speed * dt;
@@ -821,7 +877,7 @@ function animate() {
     if (stepZ) tryMove(state.x, THREE.MathUtils.clamp(state.z + stepZ, -BOUNDS.z, BOUNDS.z));
     state.ground = LAYOUT.stairHeight(state.floor, state.x, state.z);
     // Jumping: a simple arc above whatever is underfoot.
-    if (state.jumpQueued && state.air === 0 && !isStunned()) state.vy = JUMP_SPEED;
+    if (state.jumpQueued && state.air === 0 && !held) state.vy = JUMP_SPEED;
     state.jumpQueued = false;
     if (state.air > 0 || state.vy > 0) {
       state.vy -= GRAVITY * dt;
