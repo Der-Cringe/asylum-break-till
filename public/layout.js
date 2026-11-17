@@ -77,6 +77,19 @@
   ];
   const STATION_RANGE = 3.5;
 
+  // Vehicles stay on the floor they start on (no driving up stairs). `team` decides who may drive,
+  // `seats` how many ride, `speed` multiplies the driver's speed; vehicles with `ram` bowl enemies over.
+  const VEHICLE_TYPES = {
+    wheelchair: { name: 'Wheelchair', team: 'all', seats: 2, speed: 1, verb: 'Push' },
+    golfCart: { name: 'Golf Cart', team: 'staff', seats: 2, speed: 1.8, verb: 'Drive', ram: { minSpeed: 10, damage: 12, stun: 2, push: 4 } },
+    forklift: { name: 'Forklift', team: 'staff', seats: 1, speed: 1.25, verb: 'Drive', ram: { minSpeed: 6, damage: 8, stun: 1.5, push: 6 } },
+  };
+  const VEHICLES = [
+    { type: 'wheelchair', floor: 2, x: -45, z: 0 }, { type: 'wheelchair', floor: 2, x: 40, z: 0 },
+    { type: 'wheelchair', floor: 1, x: 45, z: 0 }, { type: 'golfCart', floor: 1, x: -45, z: 0 },
+    { type: 'golfCart', floor: 0, x: 40, z: 0 }, { type: 'forklift', floor: 0, x: -40, z: 0 },
+  ].map((spot, i) => ({ id: `vehicle${i}`, ...spot }));
+
   // Security cameras for the director's tablet: mounted at (x, z) under the ceiling, looking at (tx, tz).
   const CAMERAS = [
     { label: 'Lobby', floor: 0, x: -36, z: -7, tx: -36, tz: -50 },
@@ -501,6 +514,7 @@
     ...Object.values(SPAWNS).filter(spawn => spawn.floor === floor),
     ...PICKUPS.filter(spot => spot.floor === floor),
     ...STATIONS.filter(spot => spot.floor === floor),
+    ...VEHICLES.filter(spot => spot.floor === floor),
     // The main corridor carries on straight through both end halls: a staircase there would stand in
     // everyone's way, so it goes along a hall's side wall instead.
     ...[-1, 1].flatMap(side => [69, 73, 77, 81, 85].flatMap(x => [-3, 1].map(z => ({ x: side * x, z })))),
@@ -730,7 +744,7 @@
   const LAYOUT = {
     FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, SEED, STAIR, STAIRS,
     stairBox, stairBody, stairLocal, stairMove, stairHeight, stairNeighbours,
-    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, SECURE_DOORS, segmentHitsBox, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
+    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, VEHICLE_TYPES, VEHICLES, SECURE_DOORS, segmentHitsBox, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
   };
   if (typeof module === 'object' && module.exports) module.exports = LAYOUT;
   else root.LAYOUT = LAYOUT;

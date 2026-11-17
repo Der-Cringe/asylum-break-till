@@ -119,6 +119,75 @@ export function createWorld(ctx) {
     }
   }
 
+  // ---- Vehicles --------------------------------------------------------------------------------
+  // Built from boxes like everything else, facing -z (the way characters look at yaw 0).
+  const solid = color => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2 });
+  function part(group, x, y, z, w, h, d, material) {
+    const mesh = new THREE.Mesh(UNIT, material); mesh.position.set(x, y, z); mesh.scale.set(w, h, d); mesh.castShadow = true; group.add(mesh);
+  }
+  const wheel = solid(0x1b1f24), steel = solid(0x9aa4ad);
+  const VEHICLE_MODELS = {
+    wheelchair: g => {
+      const seat = solid(0x2c5a8a);
+      part(g, 0, 0.9, 0.1, 1.4, 0.15, 1.3, seat); part(g, 0, 1.6, 0.75, 1.4, 1.3, 0.15, seat);
+      for (const x of [-0.8, 0.8]) { part(g, x, 0.7, 0.3, 0.12, 1.4, 1.4, wheel); part(g, x * 0.75, 0.25, -0.6, 0.12, 0.5, 0.5, wheel); }
+      for (const x of [-0.6, 0.6]) part(g, x, 2.1, 0.95, 0.1, 0.1, 0.5, steel);
+    },
+    golfCart: g => {
+      const body = solid(0xeef1f3), trim = solid(0x2878d0);
+      part(g, 0, 0.75, 0, 2.6, 0.8, 4.6, body); part(g, 0, 1.25, -1.9, 2.4, 0.4, 0.6, trim);
+      part(g, 0, 1.4, 0.6, 2.2, 0.5, 1.4, solid(0x2c3540)); part(g, 0, 2, 1.25, 2.2, 0.9, 0.2, solid(0x2c3540));
+      for (const [x, z] of [[-1.15, 1.9], [1.15, 1.9], [-1.15, -0.4], [1.15, -0.4]]) part(g, x, 3, z, 0.12, 2.6, 0.12, steel);
+      part(g, 0, 4.3, 0.75, 2.6, 0.12, 3.2, body);
+      for (const [x, z] of [[-1.3, 1.5], [1.3, 1.5], [-1.3, -1.5], [1.3, -1.5]]) part(g, x, 0.4, z, 0.3, 0.8, 0.8, wheel);
+    },
+    forklift: g => {
+      const body = solid(0xf2b33b);
+      part(g, 0, 1, 0.6, 2.2, 1.4, 3, body); part(g, 0, 2, 1.5, 2, 0.6, 1, solid(0x2c3540));
+      part(g, 0, 2.5, -1.1, 2, 4.4, 0.2, steel); part(g, -0.55, 0.35, -2.1, 0.25, 0.12, 2, steel); part(g, 0.55, 0.35, -2.1, 0.25, 0.12, 2, steel);
+      for (const [x, z] of [[-1.1, 1.5], [1.1, 1.5], [-1.1, -0.5], [1.1, -0.5]]) part(g, x, 0.45, z, 0.3, 0.9, 0.9, wheel);
+      part(g, 0, 3.6, 0.6, 2.2, 0.12, 2.4, body);
+    },
+  };
+  const vehicles = new Map();
+  for (const spot of LAYOUT.VEHICLES) {
+    const group = new THREE.Group();
+    VEHICLE_MODELS[spot.type](group);
+    group.position.set(spot.x, LAYOUT.FLOOR_Y[spot.floor], spot.z);
+    floors[spot.floor].add(group);
+    vehicles.set(spot.id, { ...spot, group, target: { x: spot.x, z: spot.z, yaw: 0 }, driver: null, passenger: null });
+  }
+  socket?.on('vehicles', list => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      const vehicle = vehicles.get(entry?.id); if (!vehicle) continue;
+      Object.assign(vehicle.target, { x: entry.x, z: entry.z, yaw: entry.yaw });
+      vehicle.driver = entry.driver; vehicle.passenger = entry.passenger;
+    }
+  });
+  let riding = null; // { vehicle, seat } while you sit in or push a vehicle
+  function nearestVehicle() {
+    let best = null, bestDistance = 3;
+    for (const vehicle of vehicles.values()) {
+      const distance = Math.hypot(vehicle.group.position.x - state.x, vehicle.group.position.z - state.z);
+      if (vehicle.floor === state.floor && distance <= bestDistance) { best = vehicle; bestDistance = distance; }
+    }
+    return best ? { vehicle: best, distance: bestDistance } : null;
+  }
+  function updateVehicles(dt) {
+    const smoothing = 1 - Math.exp(-12 * dt);
+    for (const vehicle of vehicles.values()) {
+      const g = vehicle.group;
+      // Your own vehicle follows you directly, so driving feels as responsive as walking.
+      const mine = riding?.vehicle === vehicle.id && riding.seat === 'driver';
+      const to = mine ? { x: state.x, z: state.z, yaw: state.yaw } : vehicle.target;
+      g.position.x += (to.x - g.position.x) * (mine ? 1 : smoothing);
+      g.position.z += (to.z - g.position.z) * (mine ? 1 : smoothing);
+      const turn = Math.atan2(Math.sin(to.yaw - g.rotation.y), Math.cos(to.yaw - g.rotation.y));
+      g.rotation.y += turn * (mine ? 1 : smoothing);
+    }
+  }
+
   // ---- Blackout --------------------------------------------------------------------------------
   // With the power cut the building goes nearly black; night vision goggles keep it readable.
   let blackoutUntil = 0, nightVision = false, lightLevel = 1;
@@ -187,6 +256,7 @@ export function createWorld(ctx) {
 
   // ---- Self state ------------------------------------------------------------------------------
   function applySelf(data) {
+    if (data.vehicle !== undefined) riding = data.vehicle ? { vehicle: data.vehicle, seat: data.seat } : null;
     if (data.nightVision !== undefined) nightVision = Boolean(data.nightVision);
     if (Number.isFinite(data.credits)) {
       $('walletLabel').textContent = `LV ${data.level} · ${data.credits} ¢`;
@@ -206,10 +276,17 @@ export function createWorld(ctx) {
   function update(now, dt) {
     updateDoors(dt);
     updateLights(now, dt);
+    updateVehicles(dt);
     if (!state.role) { prompt.classList.remove('visible'); return; }
     const station = state.view ? null : nearestStation();
-    target = station;
-    const text = work ? 'E · stop' : station ? `E · ${STATION_VERBS[station.type](station, { out: now < blackoutUntil })}` : '';
+    const near = state.view || riding ? null : nearestVehicle();
+    const stationDistance = station ? Math.hypot(station.x - state.x, station.z - state.z) : Infinity;
+    const vehicle = near && near.distance < stationDistance ? near.vehicle : null;
+    target = vehicle ?? station;
+    const type = vehicle && LAYOUT.VEHICLE_TYPES[vehicle.type];
+    const vehicleVerb = type && (!vehicle.driver && (type.team === 'all' || (state.role !== 'patient') === (type.team === 'staff')) ? type.verb : 'Ride');
+    const text = riding ? 'E · get out' : work ? 'E · stop' : vehicle ? `E · ${vehicleVerb} ${type.name.toLowerCase()}`
+      : station ? `E · ${STATION_VERBS[station.type](station, { out: now < blackoutUntil })}` : '';
     if (prompt.textContent !== text) prompt.textContent = text;
     prompt.classList.toggle('visible', Boolean(text));
     document.body.classList.toggle('can-interact', Boolean(text));
@@ -225,7 +302,8 @@ export function createWorld(ctx) {
     interact, applySelf, update, doorBlocks, openChat,
     closeOverlays() { if (!shopStation) return false; closeShop(); return true; },
     get typing() { return document.activeElement === chatInput; },
-    reset() { work = null; closeShop(); },
+    reset() { work = null; riding = null; closeShop(); },
+    get riding() { return riding; },
     get target() { return target; },
   };
 }

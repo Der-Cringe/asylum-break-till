@@ -17,7 +17,7 @@ const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
-const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, SECURE_DOORS, segmentHitsBox, wallBetween, stairBody, stairHeight } = LAYOUT;
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, VEHICLE_TYPES, SECURE_DOORS, segmentHitsBox, wallBetween, stairBody, stairHeight } = LAYOUT;
 // Patients cut the power at the breaker panel; staff switch it back on there, or it comes back by itself.
 const BLACKOUT = { duration: 60_000, cut: 5, restore: 3 };
 let blackoutUntil = 0;
@@ -58,6 +58,9 @@ const mines = new Map(); // id -> placed floor mines
 const pickups = PICKUP_SPOTS.map((spot, id) => ({ id, ...spot, item: null, respawnAt: 0 }));
 const doors = SECURE_DOORS.map(def => ({ ...def, hp: DOOR.hp, brokenUntil: 0, weldedUntil: 0, open: false }));
 let doorsDirty = true;
+const VEHICLE = { range: 3, idleReturnMs: 120_000, seatHeight: 0.9 };
+const vehicles = LAYOUT.VEHICLES.map(spot => ({ ...spot, def: VEHICLE_TYPES[spot.type], yaw: 0, driver: null, passenger: null, home: { ...spot }, idleSince: Date.now(), rammed: new Map() }));
+let vehiclesDirty = true;
 let nextEntityId = 1;
 let dirty = false;
 let pickupsDirty = true;
@@ -98,7 +101,7 @@ const allied = (a, b) => teamOf(a.role) === teamOf(b.role);
 const isDown = (player, now = Date.now()) => player.downUntil > now;
 const isStunned = (player, now = Date.now()) => player.stunUntil > now || player.holdUntil > now || isDown(player, now);
 // Rooted players (netted) cannot walk, but can still use items.
-const isRooted = (player, now = Date.now()) => player.rootUntil > now || Boolean(player.carriedBy);
+const isRooted = (player, now = Date.now()) => player.rootUntil > now || Boolean(player.carriedBy) || player.seat === 'passenger';
 const isRaging = (player, now = Date.now()) => player.rageUntil > now;
 function cleanName(value) {
   return String(value ?? '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Player';
@@ -110,7 +113,7 @@ function publicState(player) {
     id, name, role, x, z, floor, yaw, health, maxHealth, air,
     equippedItem: player.equipped?.item ?? null,
     look: player.look, stunned: isStunned(player, now), down: isDown(player, now),
-    rooted: player.rootUntil > now, raging: isRaging(player, now), carried: Boolean(player.carriedBy),
+    rooted: player.rootUntil > now, raging: isRaging(player, now), carried: Boolean(player.carriedBy), seat: player.seat,
   };
 }
 // Everything the owning client needs for its own HUD. Timers go out as remaining milliseconds,
@@ -131,6 +134,7 @@ function selfState(player) {
     boosted: Math.max(0, player.boostUntil - now),
     jammed: player.jammed, armor: player.armor < 1, mask: player.mask, nightVision: player.nightVision,
     carrying: Boolean(player.carrying), carried: Boolean(player.carriedBy),
+    vehicle: player.vehicle, seat: player.seat,
     credits: player.credits, xp: player.xp, level: levelOf(player.xp),
     work: player.work ? { label: player.work.label, left: Math.max(0, player.work.until - now), total: player.work.total } : null,
   };
@@ -154,6 +158,7 @@ function speedMultiplier(player, now = Date.now()) {
   let speed = player.boostUntil > now ? player.boostMultiplier : 1;
   if (player.slowUntil > now) speed *= 0.55;
   if (player.carrying) speed *= 0.8;
+  if (player.seat === 'driver') speed *= vehicleOf(player)?.def.speed ?? 1;
   return speed * (LOOK_SPEED[player.look] ?? 1);
 }
 function notify(player, message) {
@@ -252,6 +257,7 @@ function knockDown(target, attacker) {
   target.downUntil = Date.now() + RESPAWN_MS;
   target.look = null;
   if (target.carrying) releaseCarry(target);
+  if (target.vehicle) leaveVehicle(target);
   notify(target, attacker ? `Knocked out by ${attacker.name}` : 'Knocked out');
   if (attacker) notify(attacker, `You knocked out ${target.name}`);
   if (attacker && hostile(attacker, target)) reward(attacker, 5, 10);
@@ -266,7 +272,7 @@ function knockDown(target, attacker) {
 const FRESH_STATUS = () => ({
   downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
   look: null, combo: null, armor: 1, mask: false, nightVision: false, jammed: false, carrying: null, carriedBy: null, air: 0,
-  stamina: STAMINA.max, exhausted: false, sprintedAt: 0, work: null,
+  stamina: STAMINA.max, exhausted: false, sprintedAt: 0, work: null, vehicle: null, seat: null,
 });
 function sendStamina(player) {
   const value = Math.round(player.stamina);
@@ -281,6 +287,7 @@ function spendStamina(player, amount) {
 }
 function respawn(player) {
   if (player.carrying || player.carriedBy) releaseCarry(player);
+  if (player.vehicle) leaveVehicle(player);
   const spawn = SPAWNS[player.role];
   Object.assign(player, FRESH_STATUS(), {
     x: spawn.x, z: spawn.z, floor: spawn.floor, y: FLOOR_Y[spawn.floor],
@@ -797,12 +804,101 @@ function setBlackout(until) {
 }
 const worldState = () => ({ blackout: Math.max(0, blackoutUntil - Date.now()) });
 function interact(player, socket) {
+  if (player.vehicle) { leaveVehicle(player); return; }
   if (isStunned(player) || isRooted(player)) return;
   if (player.work) { cancelWork(player, 'Stopped'); return; }
-  const station = nearestStation(player);
-  if (!station) return;
-  STATION_HANDLERS[station.type]?.(player, station, socket);
+  const station = nearestStation(player), vehicle = nearestVehicle(player);
+  const stationDistance = station ? Math.hypot(station.x - player.x, station.z - player.z) : Infinity;
+  if (vehicle && Math.hypot(vehicle.x - player.x, vehicle.z - player.z) < stationDistance) { board(player, vehicle); return; }
+  if (station) STATION_HANDLERS[station.type]?.(player, station, socket);
 }
+
+// ---- Vehicles ------------------------------------------------------------------------------------
+
+const vehicleOf = player => vehicles.find(vehicle => vehicle.id === player.vehicle);
+function nearestVehicle(player) {
+  let best = null, bestDistance = VEHICLE.range;
+  for (const vehicle of vehicles) {
+    const distance = Math.hypot(vehicle.x - player.x, vehicle.z - player.z);
+    if (vehicle.floor === player.floor && distance <= bestDistance) { best = vehicle; bestDistance = distance; }
+  }
+  return best;
+}
+// The driver takes the free driving seat; anyone friendly to the driver may take a free passenger seat.
+function board(player, vehicle) {
+  const def = vehicle.def;
+  const mayDrive = def.team === 'all' || def.team === teamOf(player.role);
+  if (!vehicle.driver && mayDrive) {
+    vehicle.driver = player.id;
+    Object.assign(player, { vehicle: vehicle.id, seat: 'driver', x: vehicle.x, z: vehicle.z });
+    notify(player, `${def.verb} the ${def.name.toLowerCase()} · E to get out`);
+  } else if (def.seats > 1 && !vehicle.passenger && (!vehicle.driver || allied(player, players.get(vehicle.driver) ?? player))) {
+    vehicle.passenger = player.id;
+    Object.assign(player, { vehicle: vehicle.id, seat: 'passenger' });
+    notify(player, `Riding the ${def.name.toLowerCase()} · E to get out`);
+  } else {
+    notify(player, mayDrive ? 'No free seat' : `Only staff may drive the ${def.name.toLowerCase()}`);
+    return;
+  }
+  io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
+  vehiclesDirty = true;
+  sendSelf(player);
+}
+function leaveVehicle(player) {
+  const vehicle = vehicleOf(player);
+  if (vehicle) {
+    if (vehicle.driver === player.id) vehicle.driver = null;
+    if (vehicle.passenger === player.id) vehicle.passenger = null;
+    vehicle.idleSince = Date.now();
+    // Step off beside the vehicle rather than standing inside it.
+    const side = { x: Math.cos(vehicle.yaw), z: -Math.sin(vehicle.yaw) };
+    for (const offset of [1.8, -1.8, 0]) {
+      const x = vehicle.x + side.x * offset, z = vehicle.z + side.z * offset;
+      if (spotFree(vehicle.floor, x, z) && !wallBetween(vehicle.floor, vehicle.x, vehicle.z, x, z)) { player.x = x; player.z = z; break; }
+    }
+    io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
+  }
+  Object.assign(player, { vehicle: null, seat: null, air: 0 });
+  vehiclesDirty = true;
+  sendSelf(player);
+}
+function updateVehicles(now, dt) {
+  for (const vehicle of vehicles) {
+    const driver = players.get(vehicle.driver), passenger = players.get(vehicle.passenger);
+    if (vehicle.driver && (!driver || isStunned(driver, now))) { if (driver) leaveVehicle(driver); else vehicle.driver = null; vehiclesDirty = true; }
+    if (vehicle.passenger && !passenger) { vehicle.passenger = null; vehiclesDirty = true; }
+    const pilot = players.get(vehicle.driver);
+    if (pilot) {
+      const moved = Math.hypot(pilot.x - vehicle.x, pilot.z - vehicle.z);
+      const speed = moved / dt;
+      if (moved > 0.01 || pilot.yaw !== vehicle.yaw) {
+        Object.assign(vehicle, { x: pilot.x, z: pilot.z, yaw: pilot.yaw });
+        vehiclesDirty = true;
+      }
+      if (vehicle.def.ram && speed >= vehicle.def.ram.minSpeed) ram(vehicle, pilot, now);
+    } else if (!vehicle.passenger && now - vehicle.idleSince > VEHICLE.idleReturnMs && (vehicle.x !== vehicle.home.x || vehicle.z !== vehicle.home.z)) {
+      // Abandoned vehicles are towed back to where they belong.
+      Object.assign(vehicle, { x: vehicle.home.x, z: vehicle.home.z, yaw: 0 });
+      vehiclesDirty = true;
+    }
+    const rider = players.get(vehicle.passenger);
+    if (rider) { Object.assign(rider, { x: vehicle.x, z: vehicle.z, floor: vehicle.floor, yaw: vehicle.yaw, air: VEHICLE.seatHeight }); dirty = true; }
+  }
+  if (vehiclesDirty) { vehiclesDirty = false; io.emit('vehicles', vehicleList()); }
+}
+function ram(vehicle, pilot, now) {
+  const fx = vehicle.def.ram;
+  for (const target of players.values()) {
+    if (target.floor !== vehicle.floor || target.vehicle === vehicle.id || !hostile(pilot, target) || isDown(target, now)) continue;
+    if (Math.hypot(target.x - vehicle.x, target.z - vehicle.z) > 2.2 || (vehicle.rammed.get(target.id) ?? 0) > now) continue;
+    vehicle.rammed.set(target.id, now + 1500);
+    damage(target, fx.damage, pilot);
+    stun(target, fx.stun);
+    pushAway(vehicle, target, fx.push);
+    notify(target, `Run over by ${pilot.name}`);
+  }
+}
+const vehicleList = () => vehicles.map(({ id, type, floor, x, z, yaw, driver, passenger }) => ({ id, type, floor, x, z, yaw, driver, passenger }));
 function buy(player, item) {
   const station = nearestStation(player);
   const def = ITEMS[item];
@@ -843,6 +939,7 @@ setInterval(() => {
 
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   updateDoors(now);
+  updateVehicles(now, TICK_MS / 1000);
   if (blackoutUntil && blackoutUntil <= now) setBlackout(0);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
@@ -906,6 +1003,7 @@ io.on('connection', socket => {
   socket.emit('pickups', pickupList());
   socket.emit('doors', doorList());
   socket.emit('world', worldState());
+  socket.emit('vehicles', vehicleList());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
   for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 
@@ -991,7 +1089,13 @@ io.on('connection', socket => {
       player.sprintedAt = now;
       spendStamina(player, STAMINA.drain * elapsed);
     }
-    if (Number.isInteger(data.floor) && data.floor !== player.floor) {
+    // Vehicles cannot take the stairs.
+    if (player.seat === 'driver' && stairHeight(player.floor, player.x, player.z) > 0) {
+      const vehicle = vehicleOf(player);
+      Object.assign(player, { x: vehicle.x, z: vehicle.z }); corrected = true;
+    }
+    if (Number.isInteger(data.floor) && data.floor !== player.floor && player.seat === 'driver') corrected = true;
+    else if (Number.isInteger(data.floor) && data.floor !== player.floor) {
       if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length
         && (onStairsBetween(player.floor, data.floor, player.x, player.z) || onStairsBetween(player.floor, data.floor, x, z))) {
         player.floor = data.floor;
@@ -1031,6 +1135,7 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     const player = players.get(socket.id);
     if (player && (player.carrying || player.carriedBy)) releaseCarry(player);
+    if (player?.vehicle) leaveVehicle(player);
     if (player?.session) sessions.set(player.session, { player, expires: Date.now() + SESSION_TTL_MS });
     players.delete(socket.id);
     dirty = true;

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-5';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
-import { createWorld } from './world.js?v=20261117-6';
+import { createWorld } from './world.js?v=20261117-7';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -879,7 +879,7 @@ function animate() {
     if (joystick.active) { forward = -joystick.y; sideways = joystick.x; }
     const length = Math.hypot(forward, sideways); if (length > 1) { forward /= length; sideways /= length; }
     // Stunned, netted, carried or knocked-out players cannot move; the server ignores their position updates anyway.
-    const held = isStunned() || now < state.rootedUntil || state.carried;
+    const held = isStunned() || now < state.rootedUntil || state.carried || world.riding?.seat === 'passenger';
     if (held) { forward = 0; sideways = 0; }
     // Out of breath: walk until stamina has recovered.
     const sprinting = (keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting) && !state.exhausted;
@@ -893,6 +893,8 @@ function animate() {
     const tryMove = (x, z) => {
       const step = LAYOUT.stairMove(state.floor, state.x, state.z, x, z);
       if (!step || blocked(x, z, step.floor) || world.doorBlocks(state.x, state.z, x, z, step.floor, PLAYER_RADIUS)) return;
+      // Vehicles stay on their floor and off the stairs.
+      if (world.riding && (step.floor !== state.floor || step.height > 0)) return;
       state.x = x; state.z = z; state.ground = step.height;
       if (step.floor !== state.floor) { setFloor(step.floor); updateStairHint(); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`); }
     };
