@@ -34,7 +34,7 @@ const state = {
   stunnedUntil: 0, downUntil: 0, slowedUntil: 0, rootedUntil: 0, ragingUntil: 0, boostedUntil: 0, speed: 1, look: null,
   jammed: false, armor: false, mask: false, carrying: false, carried: false,
   // Height of the steps underfoot, and how far above them a jump has taken you.
-  ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false,
+  ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false, stamina: 100, maxStamina: 100, exhausted: false, sprintingNow: false,
 };
 const keys = new Set();
 const remoteActors = new Map();
@@ -494,7 +494,16 @@ function sendJoin() {
 }
 function sendPosition() {
   lastNetworkUpdate = performance.now();
-  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw, air: state.air });
+  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw, air: state.air, sprint: state.sprintingNow });
+}
+function setStamina(data) {
+  state.stamina = Number(data.value) || 0; state.maxStamina = Number(data.max) || 100;
+  const wasExhausted = state.exhausted;
+  state.exhausted = Boolean(data.exhausted);
+  if (state.exhausted && !wasExhausted) showNotice('Out of breath');
+  const fill = document.getElementById('staminaFill');
+  fill.style.width = `${(state.stamina / state.maxStamina) * 100}%`;
+  fill.classList.toggle('exhausted', state.exhausted);
 }
 function readableItem(item) {
   return ITEMS[item]?.name ?? item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
@@ -715,6 +724,7 @@ if (socket) {
     }
   });
   socket.on('selfState', data => { if (data && state.role) applySelfState(data); });
+  socket.on('stamina', data => { if (data && state.role) setStamina(data); });
   socket.on('effect', data => {
     if (!data || typeof data.type !== 'string') return;
     effects.handle(data);
@@ -859,7 +869,9 @@ function animate() {
     // Stunned, netted, carried or knocked-out players cannot move; the server ignores their position updates anyway.
     const held = isStunned() || now < state.rootedUntil || state.carried;
     if (held) { forward = 0; sideways = 0; }
-    const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting;
+    // Out of breath: walk until stamina has recovered.
+    const sprinting = (keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting) && !state.exhausted;
+    state.sprintingNow = sprinting && (forward !== 0 || sideways !== 0);
     // The server's multiplier already covers slows, boosts, carrying and hiding in a prop.
     const speed = (sprinting ? 14 : 8) * state.speed;
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.

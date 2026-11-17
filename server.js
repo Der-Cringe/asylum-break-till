@@ -29,6 +29,9 @@ const ROLE_LIMITS = { director: 1 };
 const MAX_PLAYERS = 40;
 const MAX_SLOTS = 6;
 const SPRINT_SPEED = 14;
+const WALK_SPEED = 8;
+// Sprinting drains stamina; once it hits zero you walk until it has recovered to `recover`.
+const STAMINA = { max: 100, drain: 18, regen: 12, recover: 30 };
 const STAIR_SLACK = 3;
 const MAX_JUMP = 4;
 const SESSION_TTL_MS = 60_000;
@@ -244,7 +247,19 @@ function knockDown(target, attacker) {
 const FRESH_STATUS = () => ({
   downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
   look: null, combo: null, armor: 1, mask: false, jammed: false, carrying: null, carriedBy: null, air: 0,
+  stamina: STAMINA.max, exhausted: false, sprintedAt: 0,
 });
+function sendStamina(player) {
+  const value = Math.round(player.stamina);
+  if (value === player.sentStamina && player.exhausted === player.sentExhausted) return;
+  player.sentStamina = value; player.sentExhausted = player.exhausted;
+  io.to(player.id).emit('stamina', { value, max: STAMINA.max, exhausted: player.exhausted });
+}
+function spendStamina(player, amount) {
+  player.stamina = Math.max(0, player.stamina - amount);
+  if (player.stamina === 0) player.exhausted = true;
+  sendStamina(player);
+}
 function respawn(player) {
   if (player.carrying || player.carriedBy) releaseCarry(player);
   const spawn = SPAWNS[player.role];
@@ -364,6 +379,8 @@ const USE_HANDLERS = {
   // Charges forward and bowls over the first enemy in the way.
   dash(player, def) {
     if (isRooted(player)) { notify(player, 'You cannot charge while held'); return false; }
+    if (def.staminaCost && player.stamina < def.staminaCost) { notify(player, 'Too tired to charge'); return false; }
+    if (def.staminaCost) spendStamina(player, def.staminaCost);
     const dir = facing(player);
     const x1 = player.x, z1 = player.z;
     let victim = null;
@@ -493,6 +510,11 @@ const USE_HANDLERS = {
   },
   consume(player, def) {
     if (def.heal) player.health = Math.min(player.maxHealth, player.health + def.heal);
+    if (def.stamina) {
+      player.stamina = Math.min(STAMINA.max, player.stamina + def.stamina);
+      if (player.stamina >= STAMINA.recover) player.exhausted = false;
+      sendStamina(player);
+    }
     if (def.speed) boost(player, def.speed.multiplier, def.speed.duration);
     if (def.rage) { player.rageUntil = Date.now() + def.rage.duration * 1000; player.rageMultiplier = def.rage.multiplier; }
     effect({ type: 'heal', x: player.x, z: player.z, floor: player.floor });
@@ -549,6 +571,11 @@ setInterval(() => {
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
+    if (now - player.sprintedAt > 300 && player.stamina < STAMINA.max) {
+      player.stamina = Math.min(STAMINA.max, player.stamina + STAMINA.regen * TICK_MS / 1000);
+      if (player.exhausted && player.stamina >= STAMINA.recover) player.exhausted = false;
+    }
+    sendStamina(player);
     player.jammed = false;
     for (const zone of zones.values()) {
       if (player.floor !== zone.floor || Math.hypot(player.x - zone.x, player.z - zone.z) > zone.radius) continue;
@@ -635,7 +662,7 @@ io.on('connection', socket => {
       ...FRESH_STATUS(),
       ...(resumed && {
         x: resumed.x, y: resumed.y, z: resumed.z, floor: resumed.floor, health: resumed.health,
-        inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look,
+        inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look, stamina: resumed.stamina,
       }),
       session: token, lastMove: Date.now(),
     };
@@ -676,9 +703,14 @@ io.on('connection', socket => {
     const z = finiteClamp(data.z, -BOUNDS.z, BOUNDS.z, player.z);
     // Allow some slack for network jitter; anything faster than sprinting is a teleport, and
     // nobody walks through walls.
-    const allowed = SPRINT_SPEED * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
+    const allowed = (player.exhausted ? WALK_SPEED : SPRINT_SPEED) * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
     let corrected = false;
-    if (Math.hypot(x - player.x, z - player.z) <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
+    const step = Math.hypot(x - player.x, z - player.z);
+    if (step <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
+    if (data.sprint === true && step > 0.05 && !corrected && !player.exhausted) {
+      player.sprintedAt = now;
+      spendStamina(player, STAMINA.drain * elapsed);
+    }
     if (Number.isInteger(data.floor) && data.floor !== player.floor) {
       if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length
         && (onStairsBetween(player.floor, data.floor, player.x, player.z) || onStairsBetween(player.floor, data.floor, x, z))) {

@@ -88,7 +88,7 @@
     },
     shoulderCharge: {
       name: 'Shoulder Charge', kind: 'dash', team: 'patient', color: 0xc85953,
-      distance: 9, cooldown: 7, damage: 10, stun: 1.8,
+      distance: 9, cooldown: 7, damage: 10, stun: 1.8, staminaCost: 30,
     },
     scream: {
       name: 'Scream', kind: 'pulse', team: 'patient', color: 0xf0c3c0, cooldown: 14,
@@ -321,15 +321,15 @@
     // ---- Everyone ---------------------------------------------------------------------------
     coffee: {
       name: 'Coffee', kind: 'consume', team: 'all', color: 0x6b4128, uses: 2, cooldown: 1,
-      heal: 12,
+      heal: 12, stamina: 40,
     },
     tea: {
       name: 'Tea', kind: 'consume', team: 'all', color: 0xb8743a, uses: 2, cooldown: 1,
-      heal: 3, // Mostly for the manners.
+      heal: 3, stamina: 20, // Mostly for the manners.
     },
     bread: {
       name: 'Bread', kind: 'consume', team: 'all', color: 0xd9a35b, uses: 3, cooldown: 1,
-      heal: 8,
+      heal: 8, stamina: 25,
     },
     mango: {
       name: 'Mango', kind: 'consume', team: 'all', color: 0xf5a623, uses: 1, cooldown: 1,
@@ -337,11 +337,11 @@
     },
     candy: {
       name: 'Candy', kind: 'consume', team: 'all', color: 0xff6fb5, uses: 3, cooldown: 1,
-      speed: { multiplier: 1.2, duration: 4 },
+      speed: { multiplier: 1.2, duration: 4 }, stamina: 20,
     },
     energySoda: {
       name: 'Energy Soda', kind: 'consume', team: 'all', color: 0x47d16b, uses: 1, cooldown: 1,
-      speed: { multiplier: 1.4, duration: 8 },
+      speed: { multiplier: 1.4, duration: 8 }, stamina: 100,
     },
     tomato: {
       name: 'Rotten Tomato', kind: 'throw', team: 'all', color: 0xd8402f, uses: 3,

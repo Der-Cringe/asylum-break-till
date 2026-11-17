@@ -1,0 +1,4 @@
+/* Stamina, credits, interaction prompts, shop, chat and the other facility systems. */
+.stamina-track{height:5px;margin-top:6px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.08)}
+#staminaFill{height:100%;width:100%;border-radius:999px;background:linear-gradient(90deg,#58b7ff,#9fe3ff);transition:width .12s linear}
+#staminaFill.exhausted{background:#f0a24f}
