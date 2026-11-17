@@ -27,3 +27,17 @@
 #nightVisionTint{position:fixed;inset:0;z-index:30;pointer-events:none;opacity:0;transition:opacity .4s ease;background:radial-gradient(circle at center,rgba(60,255,90,.08),rgba(0,40,10,.55));mix-blend-mode:screen}
 .night-vision #nightVisionTint{opacity:1}
 .night-vision canvas{filter:sepia(1) hue-rotate(60deg) saturate(2.2) brightness(1.15)}
+#chatLog{position:absolute;left:16px;bottom:150px;width:min(420px,calc(100vw - 32px));display:flex;flex-direction:column;gap:3px;pointer-events:none;font-size:12px;line-height:1.35}
+.chat-line{padding:4px 8px;border-radius:8px;background:rgba(8,14,20,.66);color:#e6f0fa;transition:opacity 1s ease;overflow-wrap:anywhere}
+.chat-line b{font-weight:700;color:#9fd4ff}
+.chat-line.all b{color:#e6f0fa}
+.chat-line.team b{color:#ff9a8f}
+.chat-line.intercepted b{color:#ffd76a}
+.chat-line.system{color:#ffd9cf}
+.chat-line.faded{opacity:0}
+#chatForm{position:absolute;left:16px;bottom:116px;width:min(420px,calc(100vw - 32px));display:none;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;background:rgba(8,14,20,.9);border:1px solid rgba(125,211,252,.45);pointer-events:auto}
+#chatForm.open{display:flex}
+#chatChannel{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#7dd3fc;white-space:nowrap}
+#chatInput{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#eef5ff;font:inherit;font-size:13px}
+.touch-device #chatLog{bottom:200px}
+.touch-device #chatForm{bottom:170px}

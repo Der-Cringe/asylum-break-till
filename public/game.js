@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-4';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-5';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
-import { createWorld } from './world.js?v=20261117-5';
+import { createWorld } from './world.js?v=20261117-6';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -777,6 +777,7 @@ window.addEventListener('keydown', event => {
   if (event.repeat) return;
   if (event.code === 'KeyQ') useAbility();
   if (event.code === 'KeyE') world.interact();
+  if (event.code === 'Enter' || event.code === 'KeyT') { event.preventDefault(); world.openChat(); }
   if (event.code === 'Escape') world.closeOverlays();
   if (event.code === 'KeyV' && state.role) setCameraMode(state.cameraMode === 'first' ? 'third' : 'first');
   if (event.code === 'Space') jump();
@@ -859,6 +860,7 @@ document.addEventListener('contextmenu', event => { if (event.target.closest?.('
 document.addEventListener('selectstart', event => { if (!event.target.closest?.('input, textarea')) event.preventDefault(); });
 document.getElementById('abilityButton').addEventListener('click', useAbility);
 document.getElementById('viewButton').addEventListener('click', () => setCameraMode(state.cameraMode === 'first' ? 'third' : 'first'));
+document.getElementById('chatButton').addEventListener('click', () => world.openChat());
 document.getElementById('interactButton').addEventListener('pointerdown', event => { event.preventDefault(); world.interact(); });
 document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
 document.getElementById('fullscreenButton').addEventListener('click', async () => {

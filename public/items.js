@@ -154,6 +154,9 @@
     smuggledGoods: {
       name: 'Smuggled Goods', kind: 'tool', team: 'patient', color: 0xd4af37, value: 120,
     },
+    stolenRadio: {
+      name: 'Stolen Radio', kind: 'tool', team: 'patient', color: 0x2c3540, // Hear the staff radio.
+    },
     keycard: {
       name: 'Stolen Keycard', kind: 'tool', team: 'patient', color: 0x5aa9ff,
     },
@@ -389,7 +392,7 @@
   const PRICES = {
     glassShard: 30, tableLeg: 25, scrapMetal: 20, crowbar: 60, woodenBat: 45, crutch: 30, steelBat: 90, pipeSword: 80,
     fireBottle: 70, pipeBomb: 110, stickyBomb: 130, floorMine: 90, berserkPills: 80, adrenalineShot: 60, stolenScrubs: 120,
-    cardboardBox: 50, pottedShrub: 60, gasMask: 70, nightVision: 140, flashlight: 30, paintbrush: 20, keycard: 250,
+    cardboardBox: 50, pottedShrub: 60, gasMask: 70, nightVision: 140, flashlight: 30, stolenRadio: 90, paintbrush: 20, keycard: 250,
     shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
     netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
     straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,

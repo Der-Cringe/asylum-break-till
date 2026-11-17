@@ -30,7 +30,7 @@
       'crutch', 'pipeSword', 'fireAxe', 'rebarHammer', 'fireBottle', 'pipeBomb', 'nailBomb', 'stickyBomb', 'floorMine',
       'shoulderCharge', 'scream', 'rallyFlag', 'berserkPills', 'adrenalineShot', 'stolenScrubs', 'orderlyUniform',
       'directorSuit', 'cardboardBox', 'pottedShrub', 'gasMask', 'gasMask', 'signalJammer',
-      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard', 'nightVision',
+      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard', 'nightVision', 'stolenRadio',
     ],
     staff: [
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',

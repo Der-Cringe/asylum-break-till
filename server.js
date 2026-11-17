@@ -612,6 +612,33 @@ function pickupList() {
   return pickups.filter(pickup => pickup.item).map(({ id, floor, x, z, item }) => ({ id, floor, x, z, item }));
 }
 
+// ---- Chat and radio --------------------------------------------------------------------------------
+
+const CHAT = { length: 120, gapMs: 800 };
+// Staff talk over the radio; a patient carrying a stolen radio hears it too. Patients' team chat
+// stays among patients, and `all` reaches everyone.
+const hearsRadio = player => teamOf(player.role) === 'staff' || hasItem(player, 'stolenRadio');
+function chat(player, data) {
+  const now = Date.now();
+  if (now - (player.lastChat ?? 0) < CHAT.gapMs) return;
+  const text = String(data.text ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, CHAT.length);
+  if (!text) return;
+  player.lastChat = now;
+  const channel = data.channel === 'all' ? 'all' : teamOf(player.role) === 'staff' ? 'radio' : 'team';
+  const message = { from: player.name, role: player.role, channel, text };
+  for (const other of players.values()) {
+    const hears = channel === 'all' || (channel === 'radio' ? hearsRadio(other) : teamOf(other.role) === 'patient');
+    if (hears) io.to(other.id).emit('chat', { ...message, intercepted: channel === 'radio' && teamOf(other.role) !== 'staff' });
+  }
+}
+// Facility alarms go to staff as a toast and over the radio, where radio thieves hear them too.
+function alarm(text) {
+  for (const other of players.values()) {
+    if (teamOf(other.role) === 'staff') notify(other, `Alarm · ${text}`);
+    if (hearsRadio(other)) io.to(other.id).emit('chat', { from: 'Control', role: 'system', channel: 'radio', text, intercepted: teamOf(other.role) !== 'staff' });
+  }
+}
+
 // ---- Security doors --------------------------------------------------------------------------------
 
 const isBroken = (door, now = Date.now()) => door.brokenUntil > now;
@@ -651,7 +678,7 @@ function damageDoor(door, amount, attacker) {
   doorsDirty = true;
   effect({ type: 'explosion', x: door.x, z: door.z, floor: door.floor, radius: 1.5 });
   if (attacker) reward(attacker, 10, 15, `Broke the ${door.room} door`);
-  for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, `Alarm · ${door.room} door broken`);
+  alarm(`${door.room} door broken`);
 }
 function updateDoors(now) {
   for (const door of doors) {
@@ -744,7 +771,7 @@ const STATION_HANDLERS = {
     const tool = EXIT.pryTools.find(item => hasItem(player, item));
     if (!tool) { notify(player, 'Exit locked · find a keycard or something to pry it open'); return; }
     startWork(player, station, `Prying with ${ITEMS[tool].name}`, EXIT.pry, () => escape(player));
-    for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, 'Alarm · someone is forcing the main exit!');
+    alarm('someone is forcing the main exit!');
   },
   breaker(player, station) {
     const out = blackoutUntil > Date.now();
@@ -753,7 +780,7 @@ const STATION_HANDLERS = {
       startWork(player, station, 'Cutting the power', BLACKOUT.cut, () => {
         setBlackout(Date.now() + BLACKOUT.duration);
         reward(player, 20, 30, 'Lights out');
-        for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, 'Alarm · power cut · breaker panel in Electrical');
+        alarm('power cut · breaker panel in Electrical');
       });
       return;
     }
@@ -977,6 +1004,10 @@ io.on('connection', socket => {
     dirty = true;
   });
 
+  socket.on('chat', data => {
+    const player = players.get(socket.id);
+    if (player && isObject(data)) chat(player, data);
+  });
   socket.on('interact', () => {
     const player = players.get(socket.id);
     if (player) interact(player, socket);

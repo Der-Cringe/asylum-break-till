@@ -145,6 +145,46 @@ export function createWorld(ctx) {
     document.body.classList.toggle('night-vision', out && nightVision);
   }
 
+  // ---- Chat ------------------------------------------------------------------------------------
+  // Enter opens the input, Tab switches between your team (radio for staff) and everyone.
+  const chatLog = $('chatLog'), chatForm = $('chatForm'), chatInput = $('chatInput'), chatChannel = $('chatChannel');
+  let channel = 'team';
+  const channelName = () => (channel === 'all' ? 'All' : state.role === 'patient' ? 'Patients' : 'Radio');
+  function openChat() {
+    if (!state.role) return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    chatChannel.textContent = channelName();
+    chatForm.classList.add('open');
+    chatInput.focus();
+  }
+  function closeChat() {
+    chatInput.value = '';
+    chatForm.classList.remove('open');
+    chatInput.blur();
+  }
+  chatInput.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.key === 'Escape') closeChat();
+    if (event.key === 'Tab') { event.preventDefault(); channel = channel === 'all' ? 'team' : 'all'; chatChannel.textContent = channelName(); }
+  });
+  chatForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const text = chatInput.value.trim();
+    if (text) socket?.emit('chat', { text, channel });
+    closeChat();
+  });
+  socket?.on('chat', message => {
+    if (!message?.text) return;
+    const line = document.createElement('div');
+    line.className = `chat-line ${message.channel}${message.intercepted ? ' intercepted' : ''}${message.role === 'system' ? ' system' : ''}`;
+    const tag = message.intercepted ? 'Intercepted' : message.channel === 'radio' ? 'Radio' : message.channel === 'team' ? 'Patients' : 'All';
+    const who = document.createElement('b'); who.textContent = `[${tag}] ${message.from}: `;
+    line.append(who, document.createTextNode(message.text));
+    chatLog.append(line);
+    while (chatLog.children.length > 8) chatLog.firstChild.remove();
+    setTimeout(() => line.classList.add('faded'), 12000);
+  });
+
   // ---- Self state ------------------------------------------------------------------------------
   function applySelf(data) {
     if (data.nightVision !== undefined) nightVision = Boolean(data.nightVision);
@@ -182,8 +222,9 @@ export function createWorld(ctx) {
   }
 
   return {
-    interact, applySelf, update, doorBlocks,
+    interact, applySelf, update, doorBlocks, openChat,
     closeOverlays() { if (!shopStation) return false; closeShop(); return true; },
+    get typing() { return document.activeElement === chatInput; },
     reset() { work = null; closeShop(); },
     get target() { return target; },
   };
