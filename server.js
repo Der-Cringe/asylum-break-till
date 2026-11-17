@@ -18,6 +18,9 @@ const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTime
 const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
 const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, SECURE_DOORS, segmentHitsBox, wallBetween, stairBody, stairHeight } = LAYOUT;
+// Patients cut the power at the breaker panel; staff switch it back on there, or it comes back by itself.
+const BLACKOUT = { duration: 60_000, cut: 5, restore: 3 };
+let blackoutUntil = 0;
 const DOOR = { hp: 120, brokenFor: 30_000, openRange: 3.2, keycardDrop: 0.35 };
 const INVENTORIES = {
   patient: ['glassShard', 'shove'],
@@ -126,7 +129,7 @@ function selfState(player) {
     rooted: Math.max(0, player.rootUntil - now),
     raging: Math.max(0, player.rageUntil - now),
     boosted: Math.max(0, player.boostUntil - now),
-    jammed: player.jammed, armor: player.armor < 1, mask: player.mask,
+    jammed: player.jammed, armor: player.armor < 1, mask: player.mask, nightVision: player.nightVision,
     carrying: Boolean(player.carrying), carried: Boolean(player.carriedBy),
     credits: player.credits, xp: player.xp, level: levelOf(player.xp),
     work: player.work ? { label: player.work.label, left: Math.max(0, player.work.until - now), total: player.work.total } : null,
@@ -262,7 +265,7 @@ function knockDown(target, attacker) {
 // Status that every fresh (or respawned) player starts with.
 const FRESH_STATUS = () => ({
   downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
-  look: null, combo: null, armor: 1, mask: false, jammed: false, carrying: null, carriedBy: null, air: 0,
+  look: null, combo: null, armor: 1, mask: false, nightVision: false, jammed: false, carrying: null, carriedBy: null, air: 0,
   stamina: STAMINA.max, exhausted: false, sprintedAt: 0, work: null,
 });
 function sendStamina(player) {
@@ -488,6 +491,7 @@ const USE_HANDLERS = {
   wear(player, def) {
     if (def.armor) player.armor = Math.min(player.armor, def.armor);
     if (def.mask) player.mask = true;
+    if (def.nightVision) player.nightVision = true;
     notify(player, `${def.name} on · until you are knocked out`);
     return true;
   },
@@ -742,8 +746,29 @@ const STATION_HANDLERS = {
     startWork(player, station, `Prying with ${ITEMS[tool].name}`, EXIT.pry, () => escape(player));
     for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, 'Alarm · someone is forcing the main exit!');
   },
-  breaker(player) { notify(player, 'Nothing happens'); },
+  breaker(player, station) {
+    const out = blackoutUntil > Date.now();
+    if (teamOf(player.role) === 'patient') {
+      if (out) { notify(player, 'The power is already out'); return; }
+      startWork(player, station, 'Cutting the power', BLACKOUT.cut, () => {
+        setBlackout(Date.now() + BLACKOUT.duration);
+        reward(player, 20, 30, 'Lights out');
+        for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, 'Alarm · power cut · breaker panel in Electrical');
+      });
+      return;
+    }
+    if (!out) { notify(player, 'The power is on'); return; }
+    startWork(player, station, 'Restoring power', BLACKOUT.restore, () => {
+      setBlackout(0);
+      reward(player, 20, 20, 'Power restored');
+    });
+  },
 };
+function setBlackout(until) {
+  blackoutUntil = until;
+  io.emit('world', worldState());
+}
+const worldState = () => ({ blackout: Math.max(0, blackoutUntil - Date.now()) });
 function interact(player, socket) {
   if (isStunned(player) || isRooted(player)) return;
   if (player.work) { cancelWork(player, 'Stopped'); return; }
@@ -791,6 +816,7 @@ setInterval(() => {
 
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   updateDoors(now);
+  if (blackoutUntil && blackoutUntil <= now) setBlackout(0);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
     updateWork(player, now);
@@ -852,6 +878,7 @@ io.on('connection', socket => {
   socket.emit('serverReady', { ok: true, version: VERSION });
   socket.emit('pickups', pickupList());
   socket.emit('doors', doorList());
+  socket.emit('world', worldState());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
   for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 

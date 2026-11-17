@@ -23,3 +23,7 @@
 #interactButton{display:none}
 .can-interact #interactButton{display:block;background:rgba(41,92,143,.85);border-color:rgba(125,211,252,.66)}
 @media (max-width:560px){#walletLabel{display:none}#shopList{grid-template-columns:1fr}}
+/* Night vision: a green, grainy wash over the dark building. */
+#nightVisionTint{position:fixed;inset:0;z-index:30;pointer-events:none;opacity:0;transition:opacity .4s ease;background:radial-gradient(circle at center,rgba(60,255,90,.08),rgba(0,40,10,.55));mix-blend-mode:screen}
+.night-vision #nightVisionTint{opacity:1}
+.night-vision canvas{filter:sepia(1) hue-rotate(60deg) saturate(2.2) brightness(1.15)}

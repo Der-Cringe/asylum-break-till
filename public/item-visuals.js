@@ -65,6 +65,8 @@ const MODELS = {
   directorSuit: g => uniform(g, 0x9670d5),
   cardboardBox: g => box(g, 0, 0.05, 0.2, 0.5, 0.4, 0.5, 0xb98a55),
   pottedShrub: g => { box(g, 0, -0.05, 0.2, 0.26, 0.2, 0.26, 0x9a5b3a); box(g, 0, 0.2, 0.2, 0.42, 0.36, 0.42, 0x3f8f46); },
+  nightVision: g => { box(g, 0, 0.05, 0.2, 0.42, 0.18, 0.18, 0x2f3a2f); box(g, -0.1, 0.05, 0.31, 0.12, 0.12, 0.06, 0x7dff8a, 0x1a8a2a); box(g, 0.1, 0.05, 0.31, 0.12, 0.12, 0.06, 0x7dff8a, 0x1a8a2a); },
+  flashlight: g => { box(g, 0, 0, 0.2, 0.14, 0.14, 0.5, 0x2c3540); box(g, 0, 0, 0.48, 0.2, 0.2, 0.08, 0xfff3c4, 0xb8a050); },
   gasMask: g => { box(g, 0, 0.05, 0.2, 0.36, 0.3, 0.16, 0x3b4650); box(g, 0, -0.05, 0.32, 0.14, 0.14, 0.12, 0x6b7178); },
   signalJammer: g => { box(g, 0, 0, 0.2, 0.36, 0.22, 0.26, 0x2f3b4a); box(g, 0.12, 0.25, 0.2, 0.03, 0.35, 0.03, 0xb9c3cc); box(g, -0.05, 0.05, 0.34, 0.08, 0.05, 0.01, 0xd23a32, 0x800000); },
 
@@ -132,9 +134,16 @@ function medKit(g, size) {
   box(g, 0, 0, 0.2 + size * 0.21, size * 0.4, size * 0.12, 0.02, 0x27a981);
   box(g, 0, 0, 0.2 + size * 0.21, size * 0.12, size * 0.4, 0.02, 0x27a981);
 }
-export function makeItemModel(item, color = 0xcccccc) {
+// `held` models of light-giving items (the flashlight) come with a beam; loot on the floor does not.
+export function makeItemModel(item, color = 0xcccccc, { held = false } = {}) {
   const group = new THREE.Group();
   (MODELS[item] || (g => box(g, 0, 0, 0.2, 0.3, 0.3, 0.3, color)))(group);
+  if (held && item === 'flashlight') {
+    const beam = new THREE.SpotLight(0xfff1c8, 140, 38, 0.42, 0.45, 1.2);
+    beam.position.set(0, 0, 0.5);
+    beam.target.position.set(0, -0.6, 10);
+    group.add(beam, beam.target);
+  }
   return group;
 }
 

@@ -5,12 +5,12 @@ import * as THREE from 'three';
 const STATION_VERBS = {
   shop: station => `Open ${station.label}`,
   job: station => (station.job === 'laundry' ? 'Do laundry' : 'Paint'),
-  breaker: () => 'Use breaker panel',
+  breaker: (_station, power) => (power.out ? 'Restore power' : 'Cut the power'),
   exit: () => 'Try the exit',
 };
 
 export function createWorld(ctx) {
-  const { state, socket, LAYOUT, ITEMS, showNotice, floors } = ctx;
+  const { state, socket, LAYOUT, ITEMS, showNotice, floors, scene, lights, glowing } = ctx;
   const $ = id => document.getElementById(id);
   const prompt = $('interactPrompt'), workBar = $('workBar'), workFill = $('workFill'), workLabel = $('workLabel');
   const shop = $('shopPanel'), shopList = $('shopList');
@@ -119,8 +119,35 @@ export function createWorld(ctx) {
     }
   }
 
+  // ---- Blackout --------------------------------------------------------------------------------
+  // With the power cut the building goes nearly black; night vision goggles keep it readable.
+  let blackoutUntil = 0, nightVision = false, lightLevel = 1;
+  const dayBackground = scene.background.clone(), dayFog = scene.fog.color.clone(), dayNear = scene.fog.near, dayFar = scene.fog.far;
+  const black = new THREE.Color(0x010203);
+  socket?.on('world', data => {
+    const wasOut = blackoutUntil > performance.now();
+    blackoutUntil = performance.now() + (Number(data?.blackout) || 0);
+    const out = blackoutUntil > performance.now();
+    if (state.role && out !== wasOut) showNotice(out ? 'Power cut · lights out' : 'Power restored');
+  });
+  function updateLights(now, dt) {
+    const out = now < blackoutUntil;
+    const target = !out ? 1 : nightVision ? 0.7 : 0.1;
+    lightLevel += (target - lightLevel) * Math.min(1, dt * 3);
+    for (const [light, base] of lights) light.intensity = base * lightLevel;
+    for (const [material, base] of glowing) material.emissiveIntensity = base * lightLevel;
+    const dark = Math.min(1, (1 - lightLevel) * 1.1);
+    scene.background.copy(dayBackground).lerp(black, dark);
+    scene.fog.color.copy(dayFog).lerp(black, dark);
+    // Darkness swallows anything more than a few rooms away (near must stay below far).
+    scene.fog.near = dayNear - (dayNear - 6) * dark;
+    scene.fog.far = dayFar - (dayFar - 40) * dark;
+    document.body.classList.toggle('night-vision', out && nightVision);
+  }
+
   // ---- Self state ------------------------------------------------------------------------------
   function applySelf(data) {
+    if (data.nightVision !== undefined) nightVision = Boolean(data.nightVision);
     if (Number.isFinite(data.credits)) {
       $('walletLabel').textContent = `LV ${data.level} · ${data.credits} ¢`;
       if (shopStation) {
@@ -138,10 +165,11 @@ export function createWorld(ctx) {
 
   function update(now, dt) {
     updateDoors(dt);
+    updateLights(now, dt);
     if (!state.role) { prompt.classList.remove('visible'); return; }
     const station = state.view ? null : nearestStation();
     target = station;
-    const text = work ? 'E · stop' : station ? `E · ${STATION_VERBS[station.type](station)}` : '';
+    const text = work ? 'E · stop' : station ? `E · ${STATION_VERBS[station.type](station, { out: now < blackoutUntil })}` : '';
     if (prompt.textContent !== text) prompt.textContent = text;
     prompt.classList.toggle('visible', Boolean(text));
     document.body.classList.toggle('can-interact', Boolean(text));

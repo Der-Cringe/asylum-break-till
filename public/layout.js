@@ -30,13 +30,13 @@
       'crutch', 'pipeSword', 'fireAxe', 'rebarHammer', 'fireBottle', 'pipeBomb', 'nailBomb', 'stickyBomb', 'floorMine',
       'shoulderCharge', 'scream', 'rallyFlag', 'berserkPills', 'adrenalineShot', 'stolenScrubs', 'orderlyUniform',
       'directorSuit', 'cardboardBox', 'pottedShrub', 'gasMask', 'gasMask', 'signalJammer',
-      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard',
+      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard', 'nightVision',
     ],
     staff: [
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
       'barrierShield', 'heavyShield', 'taserRifle', 'stunPistol', 'laserPistol', 'pepperballGun', 'netLauncher',
       'shockLasso', 'proximityTaser', 'flashGrenade', 'empGrenade', 'chargedEmp', 'gasGrenade', 'empLauncher',
-      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch',
+      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch', 'flashlight', 'flashlight',
     ],
     medical: [
       'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',

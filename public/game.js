@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-3';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-4';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
-import { buildInterior } from './interior.js?v=20261115-3';
-import { createWorld } from './world.js?v=20261117-2';
+import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
+import { createWorld } from './world.js?v=20261117-5';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -70,8 +70,9 @@ document.body.appendChild(renderer.domElement);
 
 // Indoors: a soft fluorescent wash from above, plus a near-vertical key light that follows the
 // player so characters and furniture get crisp contact shadows without the walls striping the floor.
-scene.add(new THREE.HemisphereLight(0xeef6ff, 0x5b5f5c, 1.75));
-scene.add(new THREE.AmbientLight(0xdfe8ef, 0.35));
+const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x5b5f5c, 1.75);
+const ambientLight = new THREE.AmbientLight(0xdfe8ef, 0.35);
+scene.add(hemiLight, ambientLight);
 const keyLight = new THREE.DirectionalLight(0xfff4e2, 1.6);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.setScalar(isTouch ? 1024 : 2048);
@@ -283,7 +284,7 @@ function applyActorStatus(actor, status) {
     actor.userData.front?.clear();
     // Shields are carried squarely in front of the body; everything else sits in the hand.
     if (item && ITEMS[item]?.shield) frontMount(actor).add(makeItemModel(item, ITEMS[item].color));
-    else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
+    else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color, { held: true }));
   }
   actor.userData.down = Boolean(status.down);
   actor.userData.carried = Boolean(status.carried);
@@ -445,7 +446,7 @@ function syncViewModel() {
   arm.rotation.x = 0.3;
   addBox(viewModel, 0.03, -0.02, 0, 0.17, 0.17, 0.2, standard(0xe9bd9e, 0.9), { castShadow: false });
   {
-    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color);
+    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color, { held: true });
     model.rotation.y = Math.PI; // Item models point along +z; the camera looks along -z.
     model.position.set(0.02, 0.08, -0.1);
     model.traverse(child => { child.castShadow = false; });
@@ -588,7 +589,7 @@ function applySelfState(data) {
   state.ragingUntil = now + (Number(data.raging) || 0);
   state.boostedUntil = now + (Number(data.boosted) || 0);
   state.speed = Number(data.speed) || 1;
-  for (const flag of ['armor', 'mask', 'carrying', 'carried']) state[flag] = Boolean(data[flag]);
+  for (const flag of ['armor', 'mask', 'nightVision', 'carrying', 'carried']) state[flag] = Boolean(data[flag]);
   const wasJammed = state.jammed;
   state.jammed = Boolean(data.jammed);
   // Security cameras go dark inside an enemy jammer.
@@ -625,6 +626,7 @@ function updateStatusEffect() {
   else if (state.look) good.push('Disguised');
   if (state.armor) good.push('Vest');
   if (state.mask) good.push('Gas mask');
+  if (state.nightVision) good.push('Night vision');
   const text = [...bad, ...good].join(' · ');
   if (element.textContent !== text) element.textContent = text;
   element.classList.toggle('visible', Boolean(text));
@@ -746,7 +748,7 @@ if (socket) {
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
-const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors });
+const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors, scene, lights: [[hemiLight, 1.75], [ambientLight, 0.35], [keyLight, 1.6]], glowing: MAINS_LIGHTING });
 
 // Which rooms on this floor hold the stairs up and the openings down.
 function updateStairHint() {

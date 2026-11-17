@@ -126,6 +126,10 @@
       name: 'Potted Shrub', kind: 'disguise', team: 'patient', color: 0x3f8f46, uses: 1, cooldown: 1,
       look: 'bush',
     },
+    nightVision: {
+      name: 'Night Vision Goggles', kind: 'wear', team: 'patient', color: 0x2f5a2f, uses: 1, cooldown: 1,
+      nightVision: true, // See in a blackout until knocked out.
+    },
     gasMask: {
       name: 'Gas Mask', kind: 'wear', team: 'patient', color: 0x3b4650, uses: 1, cooldown: 1,
       mask: true, // Immune to gas until knocked out.
@@ -298,6 +302,9 @@
       // Pick up a stunned or knocked-out player; use again to put them down.
       range: 3.5, arc: 1.4, cooldown: 1, hold: 15,
     },
+    flashlight: {
+      name: 'Flashlight', kind: 'tool', team: 'staff', color: 0x2c3540, light: true, // Lights the way while held.
+    },
     weldingTorch: {
       name: 'Welding Torch', kind: 'weld', team: 'staff', color: 0xe8a33a,
       // Welds a security door shut against keycards for a minute, or repairs a broken one.
@@ -382,7 +389,7 @@
   const PRICES = {
     glassShard: 30, tableLeg: 25, scrapMetal: 20, crowbar: 60, woodenBat: 45, crutch: 30, steelBat: 90, pipeSword: 80,
     fireBottle: 70, pipeBomb: 110, stickyBomb: 130, floorMine: 90, berserkPills: 80, adrenalineShot: 60, stolenScrubs: 120,
-    cardboardBox: 50, pottedShrub: 60, gasMask: 70, paintbrush: 20, keycard: 250,
+    cardboardBox: 50, pottedShrub: 60, gasMask: 70, nightVision: 140, flashlight: 30, paintbrush: 20, keycard: 250,
     shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
     netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
     straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
