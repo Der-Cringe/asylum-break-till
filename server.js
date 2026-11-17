@@ -17,7 +17,8 @@ const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
-const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, wallBetween, stairBody, stairHeight } = LAYOUT;
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, SECURE_DOORS, segmentHitsBox, wallBetween, stairBody, stairHeight } = LAYOUT;
+const DOOR = { hp: 120, brokenFor: 30_000, openRange: 3.2, keycardDrop: 0.35 };
 const INVENTORIES = {
   patient: ['glassShard', 'shove'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'],
@@ -52,6 +53,8 @@ const sessions = new Map(); // session token -> { player, expires } for players 
 const zones = new Map(); // id -> fire, gas, healing and jammer areas
 const mines = new Map(); // id -> placed floor mines
 const pickups = PICKUP_SPOTS.map((spot, id) => ({ id, ...spot, item: null, respawnAt: 0 }));
+const doors = SECURE_DOORS.map(def => ({ ...def, hp: DOOR.hp, brokenUntil: 0, weldedUntil: 0, open: false }));
+let doorsDirty = true;
 let nextEntityId = 1;
 let dirty = false;
 let pickupsDirty = true;
@@ -171,7 +174,7 @@ function slide(player, dx, dz, distance, onStep) {
   let travelled = 0;
   while (travelled + STEP <= distance) {
     const x = player.x + dx * STEP, z = player.z + dz * STEP;
-    if (!spotFree(player.floor, x, z) || wallBetween(player.floor, player.x, player.z, x, z)) break;
+    if (!spotFree(player.floor, x, z) || wallBetween(player.floor, player.x, player.z, x, z) || doorBlocks(player, player.x, player.z, x, z)) break;
     player.x = x; player.z = z; travelled += STEP;
     if (onStep?.()) break;
   }
@@ -245,6 +248,12 @@ function knockDown(target, attacker) {
   notify(target, attacker ? `Knocked out by ${attacker.name}` : 'Knocked out');
   if (attacker) notify(attacker, `You knocked out ${target.name}`);
   if (attacker && hostile(attacker, target)) reward(attacker, 5, 10);
+  // Knocking out staff sometimes leaves their keycard up for grabs.
+  if (attacker?.role === 'patient' && teamOf(target.role) === 'staff' && Math.random() < DOOR.keycardDrop
+    && !hasItem(attacker, 'keycard') && attacker.inventory.length < MAX_SLOTS) {
+    attacker.inventory.push(makeSlot('keycard'));
+    notify(attacker, `You lifted ${target.name}'s keycard`);
+  }
 }
 // Status that every fresh (or respawned) player starts with.
 const FRESH_STATUS = () => ({
@@ -306,6 +315,11 @@ function detonate(owner, floor, x, z, fx) {
     effect({ type: 'zone', id, kind: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
     return;
   }
+  if (fx.maxDamage) {
+    for (const door of doors) {
+      if (door.floor === floor && !isBroken(door) && Math.hypot(door.x - x, door.z - z) <= fx.radius + 1) damageDoor(door, fx.maxDamage, players.get(owner.id) ?? null);
+    }
+  }
   for (const target of players.values()) {
     if (target.floor !== floor) continue;
     const distance = Math.hypot(target.x - x, target.z - z);
@@ -331,7 +345,27 @@ function ownerSnapshot(player) {
 const USE_HANDLERS = {
   melee(player, def) {
     effect({ type: 'swing', by: player.id });
-    for (const target of targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other))) meleeHit(player, target, def);
+    const targets = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other));
+    for (const target of targets) meleeHit(player, target, def);
+    // Patients with nobody to hit batter the security door in front of them instead.
+    if (!targets.length && teamOf(player.role) === 'patient') {
+      const door = doorInFront(player, def.range + 1);
+      if (door && !isBroken(door)) damageDoor(door, def.damage * power(player), player);
+    }
+    return true;
+  },
+  weld(player, def) {
+    const door = doorInFront(player, def.range);
+    if (!door) { notify(player, 'No security door in front of you'); return false; }
+    effect({ type: 'spray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: door.x, z2: door.z });
+    if (isBroken(door)) {
+      Object.assign(door, { brokenUntil: 0, hp: DOOR.hp });
+      notify(player, `${door.room} door repaired`);
+    } else {
+      door.weldedUntil = Date.now() + def.seconds * 1000;
+      notify(player, `${door.room} door welded shut · keycards won't open it`);
+    }
+    doorsDirty = true;
     return true;
   },
   ray(player, def) {
@@ -570,6 +604,62 @@ function pickupList() {
   return pickups.filter(pickup => pickup.item).map(({ id, floor, x, z, item }) => ({ id, floor, x, z, item }));
 }
 
+// ---- Security doors --------------------------------------------------------------------------------
+
+const isBroken = (door, now = Date.now()) => door.brokenUntil > now;
+const isWelded = (door, now = Date.now()) => door.weldedUntil > now;
+// Staff always get through; patients need a keycard (useless on a welded door) or a broken door.
+function canPass(player, door, now = Date.now()) {
+  if (isBroken(door, now) || teamOf(player.role) === 'staff') return true;
+  return hasItem(player, 'keycard') && !isWelded(door, now);
+}
+// Whether a door that is shut for `player` stands between (x1, z1) and (x2, z2). Someone already
+// standing in the doorway may always step out of it.
+function doorBlocks(player, x1, z1, x2, z2) {
+  for (const door of doors) {
+    if (door.floor !== player.floor || canPass(player, door)) continue;
+    const box = door.box, m = PLAYER_RADIUS;
+    const inside = x1 > box.minX - m && x1 < box.maxX + m && z1 > box.minZ - m && z1 < box.maxZ + m;
+    if (!inside && segmentHitsBox(box, x1, z1, x2, z2, m)) return true;
+  }
+  return false;
+}
+function doorInFront(player, range) {
+  const dir = facing(player);
+  let best = null, bestDistance = range;
+  for (const door of doors) {
+    if (door.floor !== player.floor) continue;
+    const dx = door.x - player.x, dz = door.z - player.z, distance = Math.hypot(dx, dz);
+    if (distance > bestDistance || (distance > 0.5 && (dx * dir.x + dz * dir.z) / distance < 0.5)) continue;
+    best = door; bestDistance = distance;
+  }
+  return best;
+}
+function damageDoor(door, amount, attacker) {
+  door.hp -= amount;
+  effect({ type: 'block', x: door.x, z: door.z, floor: door.floor });
+  if (door.hp > 0) return;
+  Object.assign(door, { hp: DOOR.hp, brokenUntil: Date.now() + DOOR.brokenFor, weldedUntil: 0 });
+  doorsDirty = true;
+  effect({ type: 'explosion', x: door.x, z: door.z, floor: door.floor, radius: 1.5 });
+  if (attacker) reward(attacker, 10, 15, `Broke the ${door.room} door`);
+  for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, `Alarm · ${door.room} door broken`);
+}
+function updateDoors(now) {
+  for (const door of doors) {
+    if (door.brokenUntil && door.brokenUntil <= now) { door.brokenUntil = 0; doorsDirty = true; }
+    if (door.weldedUntil && door.weldedUntil <= now) { door.weldedUntil = 0; doorsDirty = true; }
+    // Doors slide open for anyone allowed through who walks up to them.
+    let open = false;
+    for (const player of players.values()) {
+      if (player.floor === door.floor && !isDown(player, now) && Math.hypot(player.x - door.x, player.z - door.z) < DOOR.openRange && canPass(player, door, now)) { open = true; break; }
+    }
+    if (open !== door.open) { door.open = open; doorsDirty = true; }
+  }
+  if (doorsDirty) { doorsDirty = false; io.emit('doors', doorList(now)); }
+}
+const doorList = (now = Date.now()) => doors.map(door => ({ id: door.id, open: door.open, broken: isBroken(door, now), welded: isWelded(door, now) }));
+
 // ---- Facility: stations, jobs, credits, shops, escape --------------------------------------------
 
 const levelOf = xp => 1 + Math.floor(Math.sqrt((xp || 0) / 60));
@@ -696,6 +786,7 @@ setInterval(() => {
   for (const [token, session] of sessions) if (session.expires < now) sessions.delete(token);
 
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
+  updateDoors(now);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
     updateWork(player, now);
@@ -755,6 +846,7 @@ setInterval(() => {
 io.on('connection', socket => {
   socket.emit('serverReady', { ok: true, version: VERSION });
   socket.emit('pickups', pickupList());
+  socket.emit('doors', doorList());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
   for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 
@@ -835,7 +927,7 @@ io.on('connection', socket => {
     const allowed = (player.exhausted ? WALK_SPEED : SPRINT_SPEED) * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
     let corrected = false;
     const step = Math.hypot(x - player.x, z - player.z);
-    if (step <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
+    if (step <= allowed && !wallBetween(player.floor, player.x, player.z, x, z) && !doorBlocks(player, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
     if (data.sprint === true && step > 0.05 && !corrected && !player.exhausted) {
       player.sprintedAt = now;
       spendStamina(player, STAMINA.drain * elapsed);

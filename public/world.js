@@ -1,5 +1,7 @@
-// Facility systems in the browser: interaction prompts, work progress, credits and the shops.
-// game.js owns the scene and the player; this module only adds to them through `ctx`.
+// Facility systems in the browser: interaction prompts, work progress, credits, shops and the
+// security doors. game.js owns the scene and the player; this module only adds to them through `ctx`.
+import * as THREE from 'three';
+
 const STATION_VERBS = {
   shop: station => `Open ${station.label}`,
   job: station => (station.job === 'laundry' ? 'Do laundry' : 'Paint'),
@@ -8,7 +10,7 @@ const STATION_VERBS = {
 };
 
 export function createWorld(ctx) {
-  const { state, socket, LAYOUT, ITEMS, showNotice } = ctx;
+  const { state, socket, LAYOUT, ITEMS, showNotice, floors } = ctx;
   const $ = id => document.getElementById(id);
   const prompt = $('interactPrompt'), workBar = $('workBar'), workFill = $('workFill'), workLabel = $('workLabel');
   const shop = $('shopPanel'), shopList = $('shopList');
@@ -66,6 +68,57 @@ export function createWorld(ctx) {
   $('shopClose').addEventListener('click', closeShop);
   socket?.on('shop', data => { if (data && state.role) openShop(data); });
 
+  // ---- Security doors --------------------------------------------------------------------------
+  // A sliding panel in each doorway with a lamp above it: green when you may pass, red when not.
+  const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x5b6873, roughness: 0.5, metalness: 0.4 });
+  const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0xf2d33b, roughness: 0.6 });
+  const weldMaterial = new THREE.MeshStandardMaterial({ color: 0xff8a3c, emissive: 0xff5a1f, emissiveIntensity: 0.8 });
+  const lampOn = new THREE.MeshBasicMaterial({ color: 0x4fe08a }), lampOff = new THREE.MeshBasicMaterial({ color: 0xf0453a });
+  const UNIT = new THREE.BoxGeometry(1, 1, 1);
+  const doors = new Map();
+  for (const def of LAYOUT.SECURE_DOORS) {
+    const y = LAYOUT.FLOOR_Y[def.floor], w = LAYOUT.DOOR_WIDTH, h = LAYOUT.DOOR_HEIGHT;
+    const group = new THREE.Group();
+    group.position.set(def.x, y, def.z);
+    if (!def.alongX) group.rotation.y = Math.PI / 2;
+    const panel = new THREE.Group(); group.add(panel);
+    const slab = new THREE.Mesh(UNIT, doorMaterial); slab.scale.set(w, h, 0.25); slab.position.y = h / 2; slab.castShadow = true; panel.add(slab);
+    const stripe = new THREE.Mesh(UNIT, stripeMaterial); stripe.scale.set(w * 0.92, 0.18, 0.28); stripe.position.y = h * 0.55; panel.add(stripe);
+    const weld = new THREE.Mesh(UNIT, weldMaterial); weld.scale.set(0.12, h * 0.9, 0.3); weld.position.set(w / 2 - 0.1, h / 2, 0); weld.visible = false; panel.add(weld);
+    const lamp = new THREE.Mesh(UNIT, lampOff); lamp.scale.set(0.5, 0.2, 0.7); lamp.position.y = h + 0.3; group.add(lamp);
+    floors[def.floor].add(group);
+    doors.set(def.id, { def, panel, weld, lamp, open: false, broken: false, welded: false, lift: 0 });
+  }
+  const passable = door => door.broken || (state.role && state.role !== 'patient')
+    || (!door.welded && state.items.some(slot => slot.item === 'keycard'));
+  socket?.on('doors', list => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      const door = doors.get(entry?.id); if (!door) continue;
+      Object.assign(door, { open: Boolean(entry.open), broken: Boolean(entry.broken), welded: Boolean(entry.welded) });
+      door.weld.visible = door.welded;
+    }
+  });
+  // Shut doors block you like a wall; you can always step out of a doorway you are standing in.
+  function doorBlocks(x0, z0, x, z, floor, radius) {
+    for (const door of doors.values()) {
+      if (door.def.floor !== floor || passable(door)) continue;
+      const box = door.def.box;
+      const inside = x0 > box.minX - radius && x0 < box.maxX + radius && z0 > box.minZ - radius && z0 < box.maxZ + radius;
+      if (!inside && LAYOUT.segmentHitsBox(box, x0, z0, x, z, radius)) return true;
+    }
+    return false;
+  }
+  function updateDoors(dt) {
+    for (const door of doors.values()) {
+      const target = door.broken || door.open ? 1 : 0;
+      door.lift += (target - door.lift) * Math.min(1, dt * 8);
+      door.panel.position.y = door.lift * LAYOUT.DOOR_HEIGHT * 0.95;
+      door.panel.rotation.z = door.broken ? 0.5 : 0; // A broken door hangs crooked in its frame.
+      door.lamp.material = passable(door) ? lampOn : lampOff;
+    }
+  }
+
   // ---- Self state ------------------------------------------------------------------------------
   function applySelf(data) {
     if (Number.isFinite(data.credits)) {
@@ -83,7 +136,8 @@ export function createWorld(ctx) {
     }
   }
 
-  function update(now) {
+  function update(now, dt) {
+    updateDoors(dt);
     if (!state.role) { prompt.classList.remove('visible'); return; }
     const station = state.view ? null : nearestStation();
     target = station;
@@ -100,7 +154,7 @@ export function createWorld(ctx) {
   }
 
   return {
-    interact, applySelf, update,
+    interact, applySelf, update, doorBlocks,
     closeOverlays() { if (!shopStation) return false; closeShop(); return true; },
     reset() { work = null; closeShop(); },
     get target() { return target; },

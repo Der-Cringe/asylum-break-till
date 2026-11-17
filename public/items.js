@@ -298,6 +298,11 @@
       // Pick up a stunned or knocked-out player; use again to put them down.
       range: 3.5, arc: 1.4, cooldown: 1, hold: 15,
     },
+    weldingTorch: {
+      name: 'Welding Torch', kind: 'weld', team: 'staff', color: 0xe8a33a,
+      // Welds a security door shut against keycards for a minute, or repairs a broken one.
+      range: 4.5, cooldown: 2, seconds: 60,
+    },
     fireExtinguisher: {
       name: 'Fire Extinguisher', kind: 'spray', team: 'staff', color: 0xd23a32,
       range: 7, arc: 0.9, cooldown: 1.5,
@@ -380,7 +385,7 @@
     cardboardBox: 50, pottedShrub: 60, gasMask: 70, paintbrush: 20, keycard: 250,
     shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
     netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
-    straitjacket: 50, firemansCarry: 40, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
+    straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
     coffee: 10, tea: 5, bread: 10, mango: 20, candy: 10, energySoda: 25, smallMedicalKit: 25, mediumMedicalKit: 45,
     tomato: 5, snowball: 5,
   };

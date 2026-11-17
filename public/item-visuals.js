@@ -100,6 +100,7 @@ const MODELS = {
   gasLauncher: g => launcher(g, 0x55703a, 0x8fbf4a),
   empMine: g => { box(g, 0, 0, 0.2, 0.5, 0.12, 0.5, 0x24476b); box(g, 0, 0.08, 0.2, 0.1, 0.06, 0.1, 0x3fa9f5, 0x16557a); },
   straitjacket: g => { box(g, 0, 0, 0.2, 0.55, 0.16, 0.4, 0xeae3cf); box(g, 0, 0.09, 0.2, 0.56, 0.04, 0.08, 0x8a5a33); },
+  weldingTorch: g => { box(g, 0, 0, 0.2, 0.16, 0.16, 0.5, 0xe8a33a); box(g, 0, 0.05, 0.5, 0.06, 0.06, 0.2, 0x50585f); box(g, 0, 0.05, 0.62, 0.04, 0.04, 0.06, 0x7de4ff, 0x1a6a8a); },
   firemansCarry: g => box(g, 0, 0, 0.1, 0.24, 0.24, 0.24, 0xe9bd9e),
   largeMedicalKit: g => medKit(g, 0.78),
   mediGun: g => { box(g, 0, 0, 0.25, 0.18, 0.24, 0.6, 0xeef6fb); box(g, 0, 0, 0.58, 0.1, 0.1, 0.1, 0x5af0a0, 0x1a7a4a); box(g, 0, -0.18, 0.05, 0.1, 0.24, 0.14, 0x27a981); },

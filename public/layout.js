@@ -36,7 +36,7 @@
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
       'barrierShield', 'heavyShield', 'taserRifle', 'stunPistol', 'laserPistol', 'pepperballGun', 'netLauncher',
       'shockLasso', 'proximityTaser', 'flashGrenade', 'empGrenade', 'chargedEmp', 'gasGrenade', 'empLauncher',
-      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher',
+      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch',
     ],
     medical: [
       'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',
@@ -599,6 +599,42 @@
     return found;
   }
 
+  // ---- Security doors ----------------------------------------------------------------------
+  // Doorways into staff rooms get a door that only staff (and patients with a stolen keycard) can
+  // pass. A room that holds a staircase stays open, so the random stairs never get locked away.
+  const SECURE_ROOMS = new Set([
+    'Security Office', 'Holding', 'Equipment', 'Staff Lockers', 'Pharmacy', 'Research Lab', 'Cold Storage',
+    'Operating Room', 'Staff Room', 'Camera Room', "Director's Office", 'Server Room',
+  ]);
+  const roomAt = (floor, x, z) => rooms[floor].find(r => r.style !== 'corridor' && x > r.x1 && x < r.x2 && z > r.z1 && z < r.z2);
+  const hasStairs = (floor, name) => STAIRS.some(s => (s.floor === floor && s.from === name) || (s.floor + 1 === floor && s.to === name));
+  const SECURE_DOORS = [];
+  walls.forEach((list, floor) => list.forEach(w => w.doors.forEach(door => {
+    if (door.closed) return;
+    const alongX = w.z1 === w.z2;
+    const x = alongX ? door.at : w.x1, z = alongX ? w.z1 : door.at;
+    const sides = alongX ? [[x, z - 1.5], [x, z + 1.5]] : [[x - 1.5, z], [x + 1.5, z]];
+    const names = sides.map(([sx, sz]) => roomAt(floor, sx, sz)?.name);
+    const room = names.find(name => SECURE_ROOMS.has(name));
+    if (!room || names.some(name => name && hasStairs(floor, name))) return;
+    const half = w.thickness / 2, reach = DOOR_WIDTH / 2;
+    const box = alongX ? { minX: x - reach, maxX: x + reach, minZ: z - half, maxZ: z + half } : { minX: x - half, maxX: x + half, minZ: z - reach, maxZ: z + reach };
+    SECURE_DOORS.push({ id: `door${SECURE_DOORS.length}`, floor, x, z, alongX, room, box });
+  })));
+  // Does the segment from (x1, z1) to (x2, z2) touch `box` grown by `margin`?
+  function segmentHitsBox(box, x1, z1, x2, z2, margin = 0) {
+    const dx = x2 - x1, dz = z2 - z1;
+    let t0 = 0, t1 = 1;
+    for (const [p, d, min, max] of [[x1, dx, box.minX - margin, box.maxX + margin], [z1, dz, box.minZ - margin, box.maxZ + margin]]) {
+      if (Math.abs(d) < 1e-9) { if (p <= min || p >= max) return false; continue; }
+      let a = (min - p) / d, b = (max - p) / d;
+      if (a > b) [a, b] = [b, a];
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 >= t1) return false;
+    }
+    return true;
+  }
+
   const solids = furniture.map((list, floor) => [
     ...wallBoxes[floor].map(box => ({ ...box, tall: true })),
     ...list.filter(item => !WALK_THROUGH.has(item.type)).map(footprint).filter(Boolean),
@@ -627,7 +663,7 @@
   const LAYOUT = {
     FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, SEED, STAIR, STAIRS,
     stairBox, stairBody, stairLocal, stairMove, stairHeight, stairNeighbours,
-    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
+    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, SECURE_DOORS, segmentHitsBox, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
   };
   if (typeof module === 'object' && module.exports) module.exports = LAYOUT;
   else root.LAYOUT = LAYOUT;

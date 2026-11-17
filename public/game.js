@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-2';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-3';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior } from './interior.js?v=20261115-3';
-import { createWorld } from './world.js?v=20261117-1';
+import { createWorld } from './world.js?v=20261117-2';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -746,7 +746,7 @@ if (socket) {
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
-const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice });
+const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors });
 
 // Which rooms on this floor hold the stairs up and the openings down.
 function updateStairHint() {
@@ -888,7 +888,7 @@ function animate() {
     // Each axis moves separately so you slide along walls; staircases can carry you to another floor.
     const tryMove = (x, z) => {
       const step = LAYOUT.stairMove(state.floor, state.x, state.z, x, z);
-      if (!step || blocked(x, z, step.floor)) return;
+      if (!step || blocked(x, z, step.floor) || world.doorBlocks(state.x, state.z, x, z, step.floor, PLAYER_RADIUS)) return;
       state.x = x; state.z = z; state.ground = step.height;
       if (step.floor !== state.floor) { setFloor(step.floor); updateStairHint(); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`); }
     };
@@ -918,7 +918,7 @@ function animate() {
     updateSlotCooldowns(now);
     updateStatusEffect();
   }
-  world.update(now);
+  world.update(now, dt);
   // Remote players glide towards their last reported position instead of jumping every tick.
   const smoothing = 1 - Math.exp(-12 * dt);
   for (const actor of remoteActors.values()) {
