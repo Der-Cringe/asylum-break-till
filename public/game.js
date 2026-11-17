@@ -599,7 +599,6 @@ function applySelfState(data) {
 function updateStatusEffect() {
   const now = performance.now();
   const element = document.getElementById('statusEffect');
-  let text = '';
   const seconds = until => `${Math.ceil((until - now) / 1000)}s`;
   const bad = [], good = [];
   if (now < state.downUntil) bad.push(`Knocked out · ${seconds(state.downUntil)}`);
