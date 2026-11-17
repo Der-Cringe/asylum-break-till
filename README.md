@@ -28,6 +28,21 @@ All item stats live in `public/items.js`, which both the server and the browser 
   - **Disguises** as medic, orderly or director, or **hiding** as a cardboard box or a potted shrub (slow; using an item gives you away).
   - **Straitjacket** (keeps a stunned patient in place) and **Fireman's Carry** (pick up a stunned player, use again to put them down).
   - Items with `roles` are limited to those roles, e.g. the Medi Gun is medic-only.
+- **Patients vs patients:** weapons hit other patients too (never the thrower); healing and the rally flag still work between patients.
+
+## Facility systems
+- **Stamina:** sprinting drains it, food refills it; run dry and you walk until it is back to 30.
+- **E to interact** (or the E button on touch screens), all defined in `STATIONS` in `layout.js`:
+  - **Jobs:** bring laundry to a washing machine or a paintbrush to a canvas and stand still to earn credits and XP.
+  - **Shops:** the commissary (patients) and the supply terminal (staff) sell everything with a `price` in `items.js`; the commissary also buys contraband.
+  - **Escape:** patients with a stolen keycard, or a crowbar, fire axe or rebar hammer to pry it open, leave through the main exit for a big reward.
+  - **Breaker panel** in Electrical: patients cut the power (lights out for a minute, staff alerted), staff switch it back on. Flashlights and night vision goggles help in the dark.
+- **Credits and XP** stay with you when you respawn. Arrests pay staff and seize any contraband.
+- **Security doors** (`SECURE_DOORS`) into staff rooms: staff and patients with a stolen keycard pass; patients can batter or blow them open; staff weld them shut against keycards or repair them with a welding torch. Knocked-out staff sometimes drop their keycard.
+- **Chat:** Enter or T, Tab switches between your team and everyone. Staff talk over the radio, which a patient with a stolen radio can hear, alarms included.
+- **Vehicles** (`VEHICLES`): wheelchairs for anyone (one pushes, one rides), golf carts and a forklift for staff that run enemies over. They stay on their floor.
+- **Devices:** the orderly's combat drone follows and stuns, the recon drone and the director's hostile detector mark patients through walls, the medic's therapy turret heals staff. Patients can smash them.
+- **Staircases** are placed at random, but only where they cut nothing off: a walkability check keeps every doorway, spawn, loot spot and station reachable and the corridors clear.
 - The server decides every hit; the browser only shows what happened.
 
 ## Building
@@ -79,4 +94,3 @@ Note: on Render's free plan the service sleeps when idle (first visit takes ~30 
 - The server validates movement (no teleporting, floor changes only at stairwells), limits the game to one Director and rate-limits events.
 - Players who briefly lose connection get their position back for 60 seconds.
 - `map.html` is a separate map concept page, not part of the playable game.
-- You can expand specific mechanics like true keycard locks later.

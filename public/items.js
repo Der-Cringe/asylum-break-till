@@ -88,7 +88,7 @@
     },
     shoulderCharge: {
       name: 'Shoulder Charge', kind: 'dash', team: 'patient', color: 0xc85953,
-      distance: 9, cooldown: 7, damage: 10, stun: 1.8,
+      distance: 9, cooldown: 7, damage: 10, stun: 1.8, staminaCost: 30,
     },
     scream: {
       name: 'Scream', kind: 'pulse', team: 'patient', color: 0xf0c3c0, cooldown: 14,
@@ -126,6 +126,10 @@
       name: 'Potted Shrub', kind: 'disguise', team: 'patient', color: 0x3f8f46, uses: 1, cooldown: 1,
       look: 'bush',
     },
+    nightVision: {
+      name: 'Night Vision Goggles', kind: 'wear', team: 'patient', color: 0x2f5a2f, uses: 1, cooldown: 1,
+      nightVision: true, // See in a blackout until knocked out.
+    },
     gasMask: {
       name: 'Gas Mask', kind: 'wear', team: 'patient', color: 0x3b4650, uses: 1, cooldown: 1,
       mask: true, // Immune to gas until knocked out.
@@ -134,6 +138,27 @@
       name: 'Signal Jammer', kind: 'deploy', team: 'patient', color: 0x2f3b4a, uses: 1, cooldown: 1,
       // Enemy tasers, launchers and tablets stop working inside it.
       effect: { type: 'jam', radius: 10, duration: 18 },
+    },
+
+    // ---- Patients: jobs and loot to sell ----------------------------------------------------------
+    // `tool` items do nothing when used; they matter for jobs, doors, the exit and the commissary.
+    laundry: {
+      name: 'Laundry', kind: 'tool', team: 'patient', color: 0xdcd6c8, job: 'laundry',
+    },
+    paintbrush: {
+      name: 'Paintbrush', kind: 'tool', team: 'patient', color: 0xe05a8a, job: 'paint',
+    },
+    contraband: {
+      name: 'Contraband', kind: 'tool', team: 'patient', color: 0x8a6d3a, value: 40,
+    },
+    smuggledGoods: {
+      name: 'Smuggled Goods', kind: 'tool', team: 'patient', color: 0xd4af37, value: 120,
+    },
+    stolenRadio: {
+      name: 'Stolen Radio', kind: 'tool', team: 'patient', color: 0x2c3540, // Hear the staff radio.
+    },
+    keycard: {
+      name: 'Stolen Keycard', kind: 'tool', team: 'patient', color: 0x5aa9ff,
     },
 
     // ---- Staff: weapons ---------------------------------------------------------------------
@@ -280,6 +305,14 @@
       // Pick up a stunned or knocked-out player; use again to put them down.
       range: 3.5, arc: 1.4, cooldown: 1, hold: 15,
     },
+    flashlight: {
+      name: 'Flashlight', kind: 'tool', team: 'staff', color: 0x2c3540, light: true, // Lights the way while held.
+    },
+    weldingTorch: {
+      name: 'Welding Torch', kind: 'weld', team: 'staff', color: 0xe8a33a,
+      // Welds a security door shut against keycards for a minute, or repairs a broken one.
+      range: 4.5, cooldown: 2, seconds: 60,
+    },
     fireExtinguisher: {
       name: 'Fire Extinguisher', kind: 'spray', team: 'staff', color: 0xd23a32,
       range: 7, arc: 0.9, cooldown: 1.5,
@@ -310,6 +343,23 @@
       throwRange: 12, flight: 0.7, fuse: 1, cooldown: 1,
       effect: { type: 'shock', radius: 4.5, stun: 3.5 },
     },
+    // Devices are set down (or launched) and then act on their own until their time or health runs out.
+    combatDrone: {
+      name: 'Combat Drone', kind: 'device', team: 'staff', roles: ['orderly'], color: 0x2c3540, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'combatDrone', life: 40, hp: 40, follow: true, every: 2.5, range: 12, stun: 1.5 },
+    },
+    reconDrone: {
+      name: 'Recon Drone', kind: 'device', team: 'staff', color: 0x3a6fb0, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'reconDrone', life: 30, hp: 25, every: 1, radius: 18, reveal: true },
+    },
+    therapyTurret: {
+      name: 'Therapy Turret', kind: 'device', team: 'staff', roles: ['medic'], color: 0xeef6fb, uses: 1, cooldown: 1, electric: true,
+      device: { type: 'therapyTurret', life: 30, hp: 50, every: 1, radius: 8, heal: 6 },
+    },
+    hostileDetector: {
+      name: 'Hostile Detector', kind: 'reveal', team: 'staff', roles: ['director'], color: 0x9670d5, electric: true,
+      cooldown: 30, duration: 6, // Shows every patient in the building, through walls.
+    },
     combatVest: {
       name: 'Combat Vest', kind: 'wear', team: 'staff', color: 0x3b4a3a, uses: 1, cooldown: 1,
       armor: 0.7, // Takes 30% less damage until knocked out.
@@ -321,15 +371,15 @@
     // ---- Everyone ---------------------------------------------------------------------------
     coffee: {
       name: 'Coffee', kind: 'consume', team: 'all', color: 0x6b4128, uses: 2, cooldown: 1,
-      heal: 12,
+      heal: 12, stamina: 40,
     },
     tea: {
       name: 'Tea', kind: 'consume', team: 'all', color: 0xb8743a, uses: 2, cooldown: 1,
-      heal: 3, // Mostly for the manners.
+      heal: 3, stamina: 20, // Mostly for the manners.
     },
     bread: {
       name: 'Bread', kind: 'consume', team: 'all', color: 0xd9a35b, uses: 3, cooldown: 1,
-      heal: 8,
+      heal: 8, stamina: 25,
     },
     mango: {
       name: 'Mango', kind: 'consume', team: 'all', color: 0xf5a623, uses: 1, cooldown: 1,
@@ -337,11 +387,11 @@
     },
     candy: {
       name: 'Candy', kind: 'consume', team: 'all', color: 0xff6fb5, uses: 3, cooldown: 1,
-      speed: { multiplier: 1.2, duration: 4 },
+      speed: { multiplier: 1.2, duration: 4 }, stamina: 20,
     },
     energySoda: {
       name: 'Energy Soda', kind: 'consume', team: 'all', color: 0x47d16b, uses: 1, cooldown: 1,
-      speed: { multiplier: 1.4, duration: 8 },
+      speed: { multiplier: 1.4, duration: 8 }, stamina: 100,
     },
     tomato: {
       name: 'Rotten Tomato', kind: 'throw', team: 'all', color: 0xd8402f, uses: 3,
@@ -354,6 +404,19 @@
       effect: { type: 'splat', radius: 1.5, slow: 1, maxDamage: 2, minDamage: 2 },
     },
   };
+
+  // What the shops charge, in credits. Anything without a price cannot be bought.
+  const PRICES = {
+    glassShard: 30, tableLeg: 25, scrapMetal: 20, crowbar: 60, woodenBat: 45, crutch: 30, steelBat: 90, pipeSword: 80,
+    fireBottle: 70, pipeBomb: 110, stickyBomb: 130, floorMine: 90, berserkPills: 80, adrenalineShot: 60, stolenScrubs: 120,
+    cardboardBox: 50, pottedShrub: 60, gasMask: 70, nightVision: 140, flashlight: 30, stolenRadio: 90, paintbrush: 20, keycard: 250,
+    shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
+    netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
+    straitjacket: 50, firemansCarry: 40, weldingTorch: 80, combatDrone: 160, reconDrone: 120, therapyTurret: 130, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
+    coffee: 10, tea: 5, bread: 10, mango: 20, candy: 10, energySoda: 25, smallMedicalKit: 25, mediumMedicalKit: 45,
+    tomato: 5, snowball: 5,
+  };
+  for (const [item, price] of Object.entries(PRICES)) if (ITEMS[item]) ITEMS[item].price = price;
 
   if (typeof module === 'object' && module.exports) module.exports = ITEMS;
   else root.ITEMS = ITEMS;

@@ -30,18 +30,19 @@
       'crutch', 'pipeSword', 'fireAxe', 'rebarHammer', 'fireBottle', 'pipeBomb', 'nailBomb', 'stickyBomb', 'floorMine',
       'shoulderCharge', 'scream', 'rallyFlag', 'berserkPills', 'adrenalineShot', 'stolenScrubs', 'orderlyUniform',
       'directorSuit', 'cardboardBox', 'pottedShrub', 'gasMask', 'gasMask', 'signalJammer',
+      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard', 'nightVision', 'stolenRadio',
     ],
     staff: [
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
       'barrierShield', 'heavyShield', 'taserRifle', 'stunPistol', 'laserPistol', 'pepperballGun', 'netLauncher',
       'shockLasso', 'proximityTaser', 'flashGrenade', 'empGrenade', 'chargedEmp', 'gasGrenade', 'empLauncher',
-      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher',
+      'gasLauncher', 'empMine', 'firemansCarry', 'combatVest', 'fireExtinguisher', 'weldingTorch', 'flashlight', 'flashlight', 'combatDrone', 'reconDrone',
     ],
     medical: [
       'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',
-      'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol',
+      'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol', 'therapyTurret',
     ],
-    common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit'],
+    common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit', 'laundry', 'contraband'],
   };
   const PICKUPS = [
     { floor: 2, x: -30, z: 34, pool: 'patient' }, { floor: 2, x: 60, z: 28, pool: 'patient' },
@@ -61,6 +62,33 @@
     { floor: 0, x: -60, z: 0, pool: 'staff' }, { floor: 0, x: 60, z: 0, pool: 'patient' },
     { floor: 0, x: 0, z: -25, pool: 'common' }, { floor: 0, x: 0, z: 25, pool: 'staff' },
   ];
+
+  // Things to press E at. Shops sell to one team; jobs need their item in your inventory; the breaker
+  // cuts (patients) or restores (staff) the lights; the exit lets patients with a way out escape.
+  const STATIONS = [
+    { id: 'shopWard', type: 'shop', team: 'patient', label: 'Commissary', floor: 2, x: -10, z: 21.5 },
+    { id: 'shopVisit', type: 'shop', team: 'patient', label: 'Commissary', floor: 0, x: 43, z: 26.4 },
+    { id: 'shopStaff', type: 'shop', team: 'staff', label: 'Supply terminal', floor: 0, x: -64.4, z: -27 },
+    ...[10, 15, 20, 25, 30].map((x, i) => ({ id: `washer${i}`, type: 'job', job: 'laundry', label: 'Washing machine', floor: 0, x, z: 26 })),
+    { id: 'easelA', type: 'job', job: 'paint', label: 'Canvas', floor: 2, x: 44, z: -19.6 },
+    { id: 'easelB', type: 'job', job: 'paint', label: 'Canvas', floor: 2, x: 12.4, z: -40 },
+    { id: 'breaker', type: 'breaker', label: 'Breaker panel', floor: 0, x: 86, z: 20 },
+    { id: 'exit', type: 'exit', label: 'Main exit', floor: 0, x: -36, z: -63.4 },
+  ];
+  const STATION_RANGE = 3.5;
+
+  // Vehicles stay on the floor they start on (no driving up stairs). `team` decides who may drive,
+  // `seats` how many ride, `speed` multiplies the driver's speed; vehicles with `ram` bowl enemies over.
+  const VEHICLE_TYPES = {
+    wheelchair: { name: 'Wheelchair', team: 'all', seats: 2, speed: 1, verb: 'Push' },
+    golfCart: { name: 'Golf Cart', team: 'staff', seats: 2, speed: 1.8, verb: 'Drive', ram: { minSpeed: 10, damage: 12, stun: 2, push: 4 } },
+    forklift: { name: 'Forklift', team: 'staff', seats: 1, speed: 1.25, verb: 'Drive', ram: { minSpeed: 6, damage: 8, stun: 1.5, push: 6 } },
+  };
+  const VEHICLES = [
+    { type: 'wheelchair', floor: 2, x: -45, z: 0 }, { type: 'wheelchair', floor: 2, x: 40, z: 0 },
+    { type: 'wheelchair', floor: 1, x: 45, z: 0 }, { type: 'golfCart', floor: 1, x: -45, z: 0 },
+    { type: 'golfCart', floor: 0, x: 40, z: 0 }, { type: 'forklift', floor: 0, x: -40, z: 0 },
+  ].map((spot, i) => ({ id: `vehicle${i}`, ...spot }));
 
   // Security cameras for the director's tablet: mounted at (x, z) under the ceiling, looking at (tx, tz).
   const CAMERAS = [
@@ -485,8 +513,76 @@
     ...walls[floor].flatMap(w => w.doors.map(door => (w.z1 === w.z2 ? { x: door.at, z: w.z1 } : { x: w.x1, z: door.at }))),
     ...Object.values(SPAWNS).filter(spawn => spawn.floor === floor),
     ...PICKUPS.filter(spot => spot.floor === floor),
+    ...STATIONS.filter(spot => spot.floor === floor),
+    ...VEHICLES.filter(spot => spot.floor === floor),
+    // The main corridor carries on straight through both end halls: a staircase there would stand in
+    // everyone's way, so it goes along a hall's side wall instead.
+    ...[-1, 1].flatMap(side => [69, 73, 77, 81, 85].flatMap(x => [-3, 1].map(z => ({ x: side * x, z })))),
   ]);
   const roomOf = (floor, box) => rooms[floor].find(r => r.style !== 'corridor' && within(box, r, 0.4));
+
+  // Walkability on a half-unit grid (with a comfortable 2-unit wide berth, not just a squeeze), so a
+  // staircase is only accepted if it cuts nothing off: every
+  // doorway, spawn, loot spot and station that could be reached before must still be reachable from
+  // the corridor crossing, and so must both ends of every staircase.
+  const GRID = 0.5, GRID_X = Math.ceil(180 / GRID), GRID_Z = Math.ceil(132 / GRID), REACH_RADIUS = 1;
+  function stampBox(grid, box, margin = REACH_RADIUS) {
+    const i0 = Math.max(0, Math.floor((box.minX - margin + 90) / GRID)), i1 = Math.min(GRID_X - 1, Math.floor((box.maxX + margin + 90) / GRID));
+    const j0 = Math.max(0, Math.floor((box.minZ - margin + 66) / GRID)), j1 = Math.min(GRID_Z - 1, Math.floor((box.maxZ + margin + 66) / GRID));
+    for (let i = i0; i <= i1; i++) grid.fill(1, i * GRID_Z + j0, i * GRID_Z + j1 + 1);
+  }
+  const baseGrids = furniture.map((list, floor) => {
+    const grid = new Uint8Array(GRID_X * GRID_Z);
+    for (const box of wallBoxes[floor]) stampBox(grid, box);
+    for (const item of list) if (!['rug', 'mat', 'chair', 'deskChair', 'monitor', 'trays', 'curtain', 'surgicalLamp', 'ivStand', 'coffeeMachine', 'nightstand', 'bucket', 'whiteboard', 'tv'].includes(item.type)) {
+      const box = footprint(item); if (box) stampBox(grid, box);
+    }
+    return grid;
+  });
+  // On its own floor a staircase blocks everything but its foot; on the floor above, its hole does.
+  function stampStair(grid, floor, stair) {
+    const wide = STAIR.width / 2 + STAIR.rail;
+    if (stair.floor === floor) stampBox(grid, stairBox(stair, 0.5, STAIR.run + 0.3, -wide, wide));
+    if (stair.floor + 1 === floor) stampBox(grid, stairBox(stair, -STAIR.rail - 0.3, STAIR.run - STAIR.entry, -wide, wide));
+  }
+  function reachable(floor, stairs) {
+    const grid = baseGrids[floor].slice();
+    for (const stair of stairs) stampStair(grid, floor, stair);
+    const seen = new Uint8Array(GRID_X * GRID_Z), stack = [];
+    const start = Math.floor(90 / GRID) * GRID_Z + Math.floor(66 / GRID);
+    if (!grid[start]) { seen[start] = 1; stack.push(start); }
+    while (stack.length) {
+      const k = stack.pop(), i = Math.floor(k / GRID_Z), j = k % GRID_Z;
+      for (const kk of [i > 0 ? k - GRID_Z : -1, i < GRID_X - 1 ? k + GRID_Z : -1, j > 0 ? k - 1 : -1, j < GRID_Z - 1 ? k + 1 : -1]) {
+        if (kk >= 0 && !grid[kk] && !seen[kk]) { seen[kk] = 1; stack.push(kk); }
+      }
+    }
+    // A spot counts as reachable when you can get within 1.5 of it.
+    return (x, z) => {
+      for (let dx = -1.5; dx <= 1.5; dx += GRID) for (let dz = -1.5; dz <= 1.5; dz += GRID) {
+        const i = Math.floor((x + dx + 90) / GRID), j = Math.floor((z + dz + 66) / GRID);
+        if (i >= 0 && j >= 0 && i < GRID_X && j < GRID_Z && seen[i * GRID_Z + j]) return true;
+      }
+      return false;
+    };
+  }
+  const centre = box => ({ x: (box.minX + box.maxX) / 2, z: (box.minZ + box.maxZ) / 2 });
+  const stairFoot = stair => centre(stairBox(stair, -2, -1, -0.5, 0.5));
+  const stairTop = stair => centre(stairBox(stair, STAIR.run + 1, STAIR.run + 2, -0.5, 0.5));
+  const mustReach = FLOOR_Y.map((_, floor) => [
+    ...walls[floor].flatMap(w => w.doors.filter(door => !door.closed).map(door => (w.z1 === w.z2 ? { x: door.at, z: w.z1 } : { x: w.x1, z: door.at }))),
+    ...Object.values(SPAWNS).filter(spot => spot.floor === floor),
+    ...PICKUPS.filter(spot => spot.floor === floor),
+    ...STATIONS.filter(spot => spot.floor === floor),
+  ]);
+  // Targets on `floor` that are reachable with `stairs` in place, including the stairs' own ends.
+  function cutsNothingOff(floor, stairs, candidate) {
+    const before = reachable(floor, stairs), after = reachable(floor, [...stairs, candidate]);
+    const ends = [...stairs, candidate].flatMap(stair => [
+      ...(stair.floor === floor ? [stairFoot(stair)] : []), ...(stair.floor + 1 === floor ? [stairTop(stair)] : []),
+    ]);
+    return mustReach[floor].every(p => !before(p.x, p.z) || after(p.x, p.z)) && ends.every(p => after(p.x, p.z));
+  }
   const STAIRS = [];
   {
     const rand = random(SEED);
@@ -514,6 +610,7 @@
           const bottomRoom = roomOf(floor, body), topRoom = roomOf(floor + 1, body);
           if (bottomRoom !== r || !topRoom || !roomOf(floor, foot) || !roomOf(floor + 1, landing)) continue;
           if (!fits(floor, body) || !fits(floor, foot) || !fits(floor + 1, body) || !fits(floor + 1, landing)) continue;
+          if (!cutsNothingOff(floor, STAIRS, stair) || !cutsNothingOff(floor + 1, STAIRS, stair)) continue;
           stair.from = bottomRoom.name; stair.to = topRoom.name;
           STAIRS.push(stair);
           taken[floor].push(body, foot);
@@ -583,6 +680,42 @@
     return found;
   }
 
+  // ---- Security doors ----------------------------------------------------------------------
+  // Doorways into staff rooms get a door that only staff (and patients with a stolen keycard) can
+  // pass. A room that holds a staircase stays open, so the random stairs never get locked away.
+  const SECURE_ROOMS = new Set([
+    'Security Office', 'Holding', 'Equipment', 'Staff Lockers', 'Pharmacy', 'Research Lab', 'Cold Storage',
+    'Operating Room', 'Staff Room', 'Camera Room', "Director's Office", 'Server Room',
+  ]);
+  const roomAt = (floor, x, z) => rooms[floor].find(r => r.style !== 'corridor' && x > r.x1 && x < r.x2 && z > r.z1 && z < r.z2);
+  const hasStairs = (floor, name) => STAIRS.some(s => (s.floor === floor && s.from === name) || (s.floor + 1 === floor && s.to === name));
+  const SECURE_DOORS = [];
+  walls.forEach((list, floor) => list.forEach(w => w.doors.forEach(door => {
+    if (door.closed) return;
+    const alongX = w.z1 === w.z2;
+    const x = alongX ? door.at : w.x1, z = alongX ? w.z1 : door.at;
+    const sides = alongX ? [[x, z - 1.5], [x, z + 1.5]] : [[x - 1.5, z], [x + 1.5, z]];
+    const names = sides.map(([sx, sz]) => roomAt(floor, sx, sz)?.name);
+    const room = names.find(name => SECURE_ROOMS.has(name));
+    if (!room || names.some(name => name && hasStairs(floor, name))) return;
+    const half = w.thickness / 2, reach = DOOR_WIDTH / 2;
+    const box = alongX ? { minX: x - reach, maxX: x + reach, minZ: z - half, maxZ: z + half } : { minX: x - half, maxX: x + half, minZ: z - reach, maxZ: z + reach };
+    SECURE_DOORS.push({ id: `door${SECURE_DOORS.length}`, floor, x, z, alongX, room, box });
+  })));
+  // Does the segment from (x1, z1) to (x2, z2) touch `box` grown by `margin`?
+  function segmentHitsBox(box, x1, z1, x2, z2, margin = 0) {
+    const dx = x2 - x1, dz = z2 - z1;
+    let t0 = 0, t1 = 1;
+    for (const [p, d, min, max] of [[x1, dx, box.minX - margin, box.maxX + margin], [z1, dz, box.minZ - margin, box.maxZ + margin]]) {
+      if (Math.abs(d) < 1e-9) { if (p <= min || p >= max) return false; continue; }
+      let a = (min - p) / d, b = (max - p) / d;
+      if (a > b) [a, b] = [b, a];
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 >= t1) return false;
+    }
+    return true;
+  }
+
   const solids = furniture.map((list, floor) => [
     ...wallBoxes[floor].map(box => ({ ...box, tall: true })),
     ...list.filter(item => !WALK_THROUGH.has(item.type)).map(footprint).filter(Boolean),
@@ -611,7 +744,7 @@
   const LAYOUT = {
     FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, SEED, STAIR, STAIRS,
     stairBox, stairBody, stairLocal, stairMove, stairHeight, stairNeighbours,
-    SPAWNS, LOOT, PICKUPS, CAMERAS, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
+    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, VEHICLE_TYPES, VEHICLES, SECURE_DOORS, segmentHitsBox, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
   };
   if (typeof module === 'object' && module.exports) module.exports = LAYOUT;
   else root.LAYOUT = LAYOUT;

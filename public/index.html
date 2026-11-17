@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="./style.css?v=20261115-1" />
   <link rel="stylesheet" href="./ui-fixes.css?v=20261115-2" />
   <link rel="stylesheet" href="./items.css?v=20261115-5" />
+  <link rel="stylesheet" href="./world.css?v=20261117-3" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen" aria-live="polite">
@@ -16,18 +17,26 @@
     <button id="reloadButton" type="button" class="reload-button" hidden onclick="location.reload()">RELOAD</button>
   </div>
   <div id="hud">
-    <div id="topBar"><span class="brand-mark">AB</span><span id="roleLabel">ROLE · NONE</span><span id="floorLabel">FLOOR · GROUND</span><span id="statusLabel">SELECT A CLASS</span></div>
-    <div id="healthPanel"><div class="health-heading"><strong>VITALS</strong><span id="healthText">100 / 100</span></div><div class="health-track"><div id="healthFill"></div></div></div>
+    <div id="topBar"><span class="brand-mark">AB</span><span id="roleLabel">ROLE · NONE</span><span id="floorLabel">FLOOR · GROUND</span><span id="walletLabel">LV 1 · 0 ¢</span><span id="statusLabel">SELECT A CLASS</span></div>
+    <div id="healthPanel"><div class="health-heading"><strong>VITALS</strong><span id="healthText">100 / 100</span></div><div class="health-track"><div id="healthFill"></div></div><div class="stamina-track" title="Stamina"><div id="staminaFill"></div></div></div>
     <div id="objectivePanel"><span class="eyebrow">CURRENT OBJECTIVE</span><strong id="objectiveText">Choose your role to enter the facility</strong><span id="objectiveHint">The lockdown is active across the site.</span></div>
     <div id="toast" role="status"></div>
     <div id="statusEffect" aria-live="polite"></div>
+    <div id="interactPrompt" aria-live="polite"></div>
+    <div id="chatLog" aria-live="polite"></div>
+    <form id="chatForm" autocomplete="off"><span id="chatChannel">Radio</span><input id="chatInput" maxlength="120" placeholder="Message · Tab switches channel" /></form>
+    <div id="workBar"><span id="workLabel"></span><div class="work-track"><div id="workFill"></div></div></div>
     <div id="damageFlash" aria-hidden="true"></div>
     <div id="inventoryPanel"><div class="panel-heading"><strong>LOADOUT</strong><span>Tap or press 1–6</span></div><div id="equipmentSlots"></div></div>
-    <div id="helpPanel"><strong>FIELD MANUAL</strong><br />WASD / arrows · move<br />Shift · sprint<br />Drag · look around<br />Space · jump<br />Walk up the stairs to change floors<br />Click · use item<br />1–6 · pick item<br />Walk over loot to grab it<br />Q · class ability<br />V · first / third person<br />Wheel · zoom</div>
+    <div id="helpPanel"><strong>FIELD MANUAL</strong><br />WASD / arrows · move<br />Shift · sprint<br />Drag · look around<br />Space · jump<br />Walk up the stairs to change floors<br />Click · use item<br />1–6 · pick item<br />Walk over loot to grab it<br />E · interact (shops, jobs, exit)<br />Enter / T · chat (Tab: team or all)<br />Q · class ability<br />V · first / third person<br />Wheel · zoom</div>
   </div>
   <div id="mobileControls" aria-label="Touch controls">
     <div id="joystickZone" aria-label="Move joystick"><div id="movePad"><div id="moveStick"></div></div></div>
-    <div id="mobileActions"><button id="useButton" class="mobileAction use-button" type="button">USE</button><button id="sprintButton" class="mobileAction" type="button">SPRINT</button><button id="jumpButton" class="mobileAction" type="button">JUMP</button><button id="abilityButton" class="mobileAction" type="button">ABILITY</button><button id="viewButton" class="mobileAction" type="button" aria-label="Switch first or third person">3RD</button><button id="fullscreenButton" class="mobileAction" type="button" aria-label="Toggle fullscreen">⛶</button></div>
+    <div id="mobileActions"><button id="useButton" class="mobileAction use-button" type="button">USE</button><button id="interactButton" class="mobileAction" type="button">E</button><button id="chatButton" class="mobileAction" type="button">CHAT</button><button id="sprintButton" class="mobileAction" type="button">SPRINT</button><button id="jumpButton" class="mobileAction" type="button">JUMP</button><button id="abilityButton" class="mobileAction" type="button">ABILITY</button><button id="viewButton" class="mobileAction" type="button" aria-label="Switch first or third person">3RD</button><button id="fullscreenButton" class="mobileAction" type="button" aria-label="Toggle fullscreen">⛶</button></div>
+  </div>
+  <div id="shopPanel" class="shop-panel hidden" role="dialog" aria-labelledby="shopTitle">
+    <div class="shop-heading"><strong id="shopTitle">Shop</strong><span id="shopCredits">0 ¢</span><button id="shopClose" type="button" aria-label="Close shop">✕</button></div>
+    <div id="shopList"></div>
   </div>
   <div id="tabletPanel" class="tablet-panel hidden" aria-label="Tablet camera presets"><strong>TABLET CAMERAS</strong><div id="cameraPresets"></div></div>
   <main id="joinScreen">
@@ -46,6 +55,7 @@
     </section>
   </main>
   <div id="flashBlind" aria-hidden="true"></div>
+  <div id="nightVisionTint" aria-hidden="true"></div>
   <div id="crosshair" aria-hidden="true"><i></i><b></b></div>
   <script>
     // Keep an import or WebGL failure from trapping the player behind the boot screen.
@@ -69,9 +79,9 @@
   </script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/" } }</script>
-  <script src="./items.js?v=20261117-1"></script>
+  <script src="./items.js?v=20261117-5"></script>
   <script src="./layout-seed.js"></script>
-  <script src="./layout.js?v=20261117-1"></script>
-  <script type="module" src="./game.js?v=20261117-1"></script>
+  <script src="./layout.js?v=20261117-7"></script>
+  <script type="module" src="./game.js?v=20261117-9"></script>
 </body>
 </html>

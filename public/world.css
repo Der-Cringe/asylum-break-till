@@ -1,0 +1,43 @@
+/* Stamina, credits, interaction prompts, shop, chat and the other facility systems. */
+.stamina-track{height:5px;margin-top:6px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.08)}
+#staminaFill{height:100%;width:100%;border-radius:999px;background:linear-gradient(90deg,#58b7ff,#9fe3ff);transition:width .12s linear}
+#staminaFill.exhausted{background:#f0a24f}
+#walletLabel{white-space:nowrap;color:#ffd76a}
+#interactPrompt{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);padding:8px 14px;border-radius:10px;background:rgba(10,18,25,.82);border:1px solid rgba(125,211,252,.45);color:#e8f6ff;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;opacity:0;transition:opacity .12s ease;white-space:nowrap;pointer-events:none}
+#interactPrompt.visible{opacity:1}
+#workBar{position:absolute;left:50%;bottom:160px;transform:translateX(-50%);width:260px;padding:8px 12px;border-radius:12px;background:rgba(10,18,25,.86);border:1px solid rgba(255,215,106,.4);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#ffe9a8;opacity:0;transition:opacity .12s ease;pointer-events:none}
+#workBar.visible{opacity:1}
+.work-track{height:6px;margin-top:6px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.1)}
+#workFill{height:100%;background:#ffd76a;transform-origin:left;transform:scaleX(0)}
+.shop-panel{position:fixed;z-index:60;left:50%;top:50%;transform:translate(-50%,-50%);width:min(420px,calc(100vw - 32px));max-height:min(560px,calc(100dvh - 120px));display:flex;flex-direction:column;padding:14px;border-radius:16px;background:rgba(9,15,21,.94);border:1px solid rgba(139,164,196,.3);box-shadow:0 24px 60px rgba(0,0,0,.5);color:#eef5ff}
+.shop-panel.hidden{display:none}
+.shop-heading{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;letter-spacing:.14em;text-transform:uppercase}
+.shop-heading strong{flex:1}
+#shopCredits{color:#ffd76a;font-weight:700}
+#shopClose{border:0;background:rgba(255,255,255,.08);color:#eef5ff;width:30px;height:30px;border-radius:8px;cursor:pointer}
+#shopList{display:grid;grid-template-columns:1fr 1fr;gap:6px;overflow-y:auto}
+.shop-item{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:8px 10px;border-radius:10px;border:1px solid rgba(136,170,205,.2);background:rgba(18,27,35,.85);color:#ebf3ff;font-size:12px;text-align:left;cursor:pointer}
+.shop-item b{color:#ffd76a;font-weight:700;white-space:nowrap}
+.shop-item:disabled{opacity:.4;cursor:default}
+.shop-item.sell{grid-column:1/-1;border-color:rgba(255,215,106,.5)}
+#interactButton{display:none}
+.can-interact #interactButton{display:block;background:rgba(41,92,143,.85);border-color:rgba(125,211,252,.66)}
+@media (max-width:560px){#walletLabel{display:none}#shopList{grid-template-columns:1fr}}
+/* Night vision: a green, grainy wash over the dark building. */
+#nightVisionTint{position:fixed;inset:0;z-index:30;pointer-events:none;opacity:0;transition:opacity .4s ease;background:radial-gradient(circle at center,rgba(60,255,90,.08),rgba(0,40,10,.55));mix-blend-mode:screen}
+.night-vision #nightVisionTint{opacity:1}
+.night-vision canvas{filter:sepia(1) hue-rotate(60deg) saturate(2.2) brightness(1.15)}
+#chatLog{position:absolute;left:16px;bottom:150px;width:min(420px,calc(100vw - 32px));display:flex;flex-direction:column;gap:3px;pointer-events:none;font-size:12px;line-height:1.35}
+.chat-line{padding:4px 8px;border-radius:8px;background:rgba(8,14,20,.66);color:#e6f0fa;transition:opacity 1s ease;overflow-wrap:anywhere}
+.chat-line b{font-weight:700;color:#9fd4ff}
+.chat-line.all b{color:#e6f0fa}
+.chat-line.team b{color:#ff9a8f}
+.chat-line.intercepted b{color:#ffd76a}
+.chat-line.system{color:#ffd9cf}
+.chat-line.faded{opacity:0}
+#chatForm{position:absolute;left:16px;bottom:116px;width:min(420px,calc(100vw - 32px));display:none;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;background:rgba(8,14,20,.9);border:1px solid rgba(125,211,252,.45);pointer-events:auto}
+#chatForm.open{display:flex}
+#chatChannel{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#7dd3fc;white-space:nowrap}
+#chatInput{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#eef5ff;font:inherit;font-size:13px}
+.touch-device #chatLog{bottom:200px}
+.touch-device #chatForm{bottom:170px}

@@ -104,6 +104,9 @@ ceilingMaterial.userData.noShadows = true;
 const lightPanelMaterial = new THREE.MeshStandardMaterial({ color: 0xf4fbff, emissive: 0xe9f6ff, emissiveIntensity: 1.25, roughness: 0.3 });
 lightPanelMaterial.userData.noShadows = true;
 const windowMaterial = new THREE.MeshStandardMaterial({ color: 0xbfd9e6, emissive: 0x8fb4c8, emissiveIntensity: 0.9, roughness: 0.2 });
+// What the mains power lights up, so a blackout can dim it: [material, normal emissive intensity].
+// Monitors and status LEDs run on emergency power and keep glowing.
+export const MAINS_LIGHTING = [[ceilingMaterial, 1], [lightPanelMaterial, 1.25], [windowMaterial, 0.9]];
 
 // Walls get an institutional two-tone finish; each floor has its own colour scheme.
 const WALL_SCHEMES = [

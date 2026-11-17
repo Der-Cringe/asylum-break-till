@@ -65,8 +65,17 @@ const MODELS = {
   directorSuit: g => uniform(g, 0x9670d5),
   cardboardBox: g => box(g, 0, 0.05, 0.2, 0.5, 0.4, 0.5, 0xb98a55),
   pottedShrub: g => { box(g, 0, -0.05, 0.2, 0.26, 0.2, 0.26, 0x9a5b3a); box(g, 0, 0.2, 0.2, 0.42, 0.36, 0.42, 0x3f8f46); },
+  nightVision: g => { box(g, 0, 0.05, 0.2, 0.42, 0.18, 0.18, 0x2f3a2f); box(g, -0.1, 0.05, 0.31, 0.12, 0.12, 0.06, 0x7dff8a, 0x1a8a2a); box(g, 0.1, 0.05, 0.31, 0.12, 0.12, 0.06, 0x7dff8a, 0x1a8a2a); },
+  flashlight: g => { box(g, 0, 0, 0.2, 0.14, 0.14, 0.5, 0x2c3540); box(g, 0, 0, 0.48, 0.2, 0.2, 0.08, 0xfff3c4, 0xb8a050); },
   gasMask: g => { box(g, 0, 0.05, 0.2, 0.36, 0.3, 0.16, 0x3b4650); box(g, 0, -0.05, 0.32, 0.14, 0.14, 0.12, 0x6b7178); },
   signalJammer: g => { box(g, 0, 0, 0.2, 0.36, 0.22, 0.26, 0x2f3b4a); box(g, 0.12, 0.25, 0.2, 0.03, 0.35, 0.03, 0xb9c3cc); box(g, -0.05, 0.05, 0.34, 0.08, 0.05, 0.01, 0xd23a32, 0x800000); },
+
+  laundry: g => { box(g, 0, 0, 0.2, 0.5, 0.3, 0.4, 0xdcd6c8); box(g, 0.08, 0.17, 0.15, 0.3, 0.06, 0.25, 0x8fb4cf); },
+  paintbrush: g => { box(g, 0, 0, 0.25, 0.06, 0.06, 0.6, 0x8a5a33); box(g, 0, 0, 0.6, 0.1, 0.08, 0.14, 0xe05a8a); },
+  contraband: g => { box(g, 0, 0, 0.2, 0.4, 0.28, 0.3, 0x8a6d3a); box(g, 0, 0.15, 0.2, 0.42, 0.04, 0.08, 0x3b2a1a); },
+  smuggledGoods: g => { box(g, 0, 0, 0.2, 0.46, 0.3, 0.32, 0x3b2a1a); box(g, 0, 0.16, 0.2, 0.3, 0.05, 0.2, 0xd4af37, 0x5a4a10); },
+  stolenRadio: g => { box(g, 0, 0, 0.2, 0.2, 0.36, 0.12, 0x2c3540); box(g, 0.06, 0.26, 0.2, 0.04, 0.2, 0.04, 0x1b1f24); box(g, 0, 0.06, 0.265, 0.12, 0.08, 0.01, 0x4fe08a, 0x1a8a4a); },
+  keycard: g => { box(g, 0, 0, 0.2, 0.3, 0.02, 0.2, 0x5aa9ff); box(g, -0.06, 0.015, 0.2, 0.1, 0.01, 0.1, 0xeef6fb); },
 
   // Staff weapons.
   twinBaton: g => { box(g, 0.08, 0, 0.45, 0.1, 0.1, 1.1, 0x3a6fb0); box(g, -0.08, 0, 0.45, 0.1, 0.1, 1.1, 0x3a6fb0); },
@@ -94,11 +103,16 @@ const MODELS = {
   gasLauncher: g => launcher(g, 0x55703a, 0x8fbf4a),
   empMine: g => { box(g, 0, 0, 0.2, 0.5, 0.12, 0.5, 0x24476b); box(g, 0, 0.08, 0.2, 0.1, 0.06, 0.1, 0x3fa9f5, 0x16557a); },
   straitjacket: g => { box(g, 0, 0, 0.2, 0.55, 0.16, 0.4, 0xeae3cf); box(g, 0, 0.09, 0.2, 0.56, 0.04, 0.08, 0x8a5a33); },
+  weldingTorch: g => { box(g, 0, 0, 0.2, 0.16, 0.16, 0.5, 0xe8a33a); box(g, 0, 0.05, 0.5, 0.06, 0.06, 0.2, 0x50585f); box(g, 0, 0.05, 0.62, 0.04, 0.04, 0.06, 0x7de4ff, 0x1a6a8a); },
   firemansCarry: g => box(g, 0, 0, 0.1, 0.24, 0.24, 0.24, 0xe9bd9e),
   largeMedicalKit: g => medKit(g, 0.78),
   mediGun: g => { box(g, 0, 0, 0.25, 0.18, 0.24, 0.6, 0xeef6fb); box(g, 0, 0, 0.58, 0.1, 0.1, 0.1, 0x5af0a0, 0x1a7a4a); box(g, 0, -0.18, 0.05, 0.1, 0.24, 0.14, 0x27a981); },
   healingGrenade: g => { box(g, 0, 0.05, 0.15, 0.24, 0.32, 0.24, 0xeef6fb); box(g, 0, 0.05, 0.28, 0.16, 0.06, 0.01, 0x27a981); box(g, 0, 0.05, 0.28, 0.06, 0.16, 0.01, 0x27a981); },
   therapyGrenade: g => { box(g, 0, 0.05, 0.15, 0.24, 0.32, 0.24, 0xa58bff); box(g, 0, 0.26, 0.15, 0.08, 0.1, 0.18, 0xb9c3cc); },
+  combatDrone: g => { box(g, 0, 0, 0.2, 0.4, 0.14, 0.4, 0x2c3540); for (const [x, z] of [[-0.25, 0], [0.25, 0], [0, -0.25], [0, 0.25]]) box(g, x, 0.08, 0.2 + z, 0.16, 0.03, 0.16, 0x7f8a94); box(g, 0, -0.02, 0.41, 0.08, 0.05, 0.02, 0xff3b2f, 0x900000); },
+  reconDrone: g => { box(g, 0, 0, 0.2, 0.36, 0.12, 0.36, 0x3a6fb0); for (const [x, z] of [[-0.22, 0], [0.22, 0]]) box(g, x, 0.08, 0.2 + z, 0.16, 0.03, 0.16, 0x7f8a94); box(g, 0, -0.08, 0.2, 0.1, 0.08, 0.1, 0x7de4ff, 0x1a6a8a); },
+  therapyTurret: g => { box(g, 0, -0.05, 0.2, 0.36, 0.14, 0.36, 0xeef6fb); box(g, 0, 0.1, 0.2, 0.22, 0.2, 0.22, 0x5af0a0, 0x1a7a4a); },
+  hostileDetector: g => { box(g, 0, 0.1, 0.25, 0.42, 0.34, 0.05, 0x2c2440); box(g, 0, 0.1, 0.28, 0.34, 0.26, 0.01, 0xd23a32, 0x5a1010); },
   combatVest: g => { box(g, 0, 0, 0.2, 0.55, 0.5, 0.16, 0x3b4a3a); box(g, 0, 0.1, 0.29, 0.3, 0.12, 0.02, 0x27a981); },
 
   // Food and other things anyone can carry.
@@ -125,9 +139,16 @@ function medKit(g, size) {
   box(g, 0, 0, 0.2 + size * 0.21, size * 0.4, size * 0.12, 0.02, 0x27a981);
   box(g, 0, 0, 0.2 + size * 0.21, size * 0.12, size * 0.4, 0.02, 0x27a981);
 }
-export function makeItemModel(item, color = 0xcccccc) {
+// `held` models of light-giving items (the flashlight) come with a beam; loot on the floor does not.
+export function makeItemModel(item, color = 0xcccccc, { held = false } = {}) {
   const group = new THREE.Group();
   (MODELS[item] || (g => box(g, 0, 0, 0.2, 0.3, 0.3, 0.3, color)))(group);
+  if (held && item === 'flashlight') {
+    const beam = new THREE.SpotLight(0xfff1c8, 140, 38, 0.42, 0.45, 1.2);
+    beam.position.set(0, 0, 0.5);
+    beam.target.position.set(0, -0.6, 10);
+    group.add(beam, beam.target);
+  }
   return group;
 }
 

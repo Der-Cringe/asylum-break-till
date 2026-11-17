@@ -17,18 +17,25 @@ const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
-const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween, stairBody, stairHeight } = LAYOUT;
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, VEHICLE_TYPES, SECURE_DOORS, segmentHitsBox, wallBetween, stairBody, stairHeight } = LAYOUT;
+// Patients cut the power at the breaker panel; staff switch it back on there, or it comes back by itself.
+const BLACKOUT = { duration: 60_000, cut: 5, restore: 3 };
+let blackoutUntil = 0;
+const DOOR = { hp: 120, brokenFor: 30_000, openRange: 3.2, keycardDrop: 0.35 };
 const INVENTORIES = {
   patient: ['glassShard', 'shove'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'],
   orderly: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'],
-  director: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'],
+  director: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet', 'hostileDetector'],
 };
 const MAX_HEALTH = { patient: 100, medic: 100, orderly: 115, director: 100 };
 const ROLE_LIMITS = { director: 1 };
 const MAX_PLAYERS = 40;
 const MAX_SLOTS = 6;
 const SPRINT_SPEED = 14;
+const WALK_SPEED = 8;
+// Sprinting drains stamina; once it hits zero you walk until it has recovered to `recover`.
+const STAMINA = { max: 100, drain: 18, regen: 12, recover: 30 };
 const STAIR_SLACK = 3;
 const MAX_JUMP = 4;
 const SESSION_TTL_MS = 60_000;
@@ -48,7 +55,14 @@ const players = new Map();
 const sessions = new Map(); // session token -> { player, expires } for players that dropped connection
 const zones = new Map(); // id -> fire, gas, healing and jammer areas
 const mines = new Map(); // id -> placed floor mines
+const devices = new Map(); // id -> drones and turrets
+let devicesDirty = false;
 const pickups = PICKUP_SPOTS.map((spot, id) => ({ id, ...spot, item: null, respawnAt: 0 }));
+const doors = SECURE_DOORS.map(def => ({ ...def, hp: DOOR.hp, brokenUntil: 0, weldedUntil: 0, open: false }));
+let doorsDirty = true;
+const VEHICLE = { range: 3, idleReturnMs: 120_000, seatHeight: 0.9 };
+const vehicles = LAYOUT.VEHICLES.map(spot => ({ ...spot, def: VEHICLE_TYPES[spot.type], yaw: 0, driver: null, passenger: null, home: { ...spot }, idleSince: Date.now(), rammed: new Map() }));
+let vehiclesDirty = true;
 let nextEntityId = 1;
 let dirty = false;
 let pickupsDirty = true;
@@ -81,11 +95,15 @@ const canUse = (player, item) => {
   if (!def || (def.team !== 'all' && def.team !== teamOf(player.role))) return false;
   return !def.roles || def.roles.includes(player.role);
 };
-const hostile = (a, b) => a !== b && teamOf(a.role) !== teamOf(b.role);
+// Patients fight staff and can also attack each other; staff never hit staff.
+// `a` and `b` may be players or owner snapshots of players, so they are compared by id.
+const hostile = (a, b) => a.id !== b.id && (teamOf(a.role) !== teamOf(b.role) || (a.role === 'patient' && b.role === 'patient'));
+// Healing, buffs and healing mist go by team, so patients can still team up and patch each other up.
+const allied = (a, b) => teamOf(a.role) === teamOf(b.role);
 const isDown = (player, now = Date.now()) => player.downUntil > now;
 const isStunned = (player, now = Date.now()) => player.stunUntil > now || player.holdUntil > now || isDown(player, now);
 // Rooted players (netted) cannot walk, but can still use items.
-const isRooted = (player, now = Date.now()) => player.rootUntil > now || Boolean(player.carriedBy);
+const isRooted = (player, now = Date.now()) => player.rootUntil > now || Boolean(player.carriedBy) || player.seat === 'passenger';
 const isRaging = (player, now = Date.now()) => player.rageUntil > now;
 function cleanName(value) {
   return String(value ?? '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Player';
@@ -97,7 +115,7 @@ function publicState(player) {
     id, name, role, x, z, floor, yaw, health, maxHealth, air,
     equippedItem: player.equipped?.item ?? null,
     look: player.look, stunned: isStunned(player, now), down: isDown(player, now),
-    rooted: player.rootUntil > now, raging: isRaging(player, now), carried: Boolean(player.carriedBy),
+    rooted: player.rootUntil > now, raging: isRaging(player, now), carried: Boolean(player.carriedBy), seat: player.seat,
   };
 }
 // Everything the owning client needs for its own HUD. Timers go out as remaining milliseconds,
@@ -116,8 +134,11 @@ function selfState(player) {
     rooted: Math.max(0, player.rootUntil - now),
     raging: Math.max(0, player.rageUntil - now),
     boosted: Math.max(0, player.boostUntil - now),
-    jammed: player.jammed, armor: player.armor < 1, mask: player.mask,
+    jammed: player.jammed, armor: player.armor < 1, mask: player.mask, nightVision: player.nightVision,
     carrying: Boolean(player.carrying), carried: Boolean(player.carriedBy),
+    vehicle: player.vehicle, seat: player.seat,
+    credits: player.credits, xp: player.xp, level: levelOf(player.xp),
+    work: player.work ? { label: player.work.label, left: Math.max(0, player.work.until - now), total: player.work.total } : null,
   };
 }
 function sendSelf(player) {
@@ -139,6 +160,7 @@ function speedMultiplier(player, now = Date.now()) {
   let speed = player.boostUntil > now ? player.boostMultiplier : 1;
   if (player.slowUntil > now) speed *= 0.55;
   if (player.carrying) speed *= 0.8;
+  if (player.seat === 'driver') speed *= vehicleOf(player)?.def.speed ?? 1;
   return speed * (LOOK_SPEED[player.look] ?? 1);
 }
 function notify(player, message) {
@@ -166,7 +188,7 @@ function slide(player, dx, dz, distance, onStep) {
   let travelled = 0;
   while (travelled + STEP <= distance) {
     const x = player.x + dx * STEP, z = player.z + dz * STEP;
-    if (!spotFree(player.floor, x, z) || wallBetween(player.floor, player.x, player.z, x, z)) break;
+    if (!spotFree(player.floor, x, z) || wallBetween(player.floor, player.x, player.z, x, z) || doorBlocks(player, player.x, player.z, x, z)) break;
     player.x = x; player.z = z; travelled += STEP;
     if (onStep?.()) break;
   }
@@ -237,16 +259,37 @@ function knockDown(target, attacker) {
   target.downUntil = Date.now() + RESPAWN_MS;
   target.look = null;
   if (target.carrying) releaseCarry(target);
+  if (target.vehicle) leaveVehicle(target);
   notify(target, attacker ? `Knocked out by ${attacker.name}` : 'Knocked out');
   if (attacker) notify(attacker, `You knocked out ${target.name}`);
+  if (attacker && hostile(attacker, target)) reward(attacker, 5, 10);
+  // Knocking out staff sometimes leaves their keycard up for grabs.
+  if (attacker?.role === 'patient' && teamOf(target.role) === 'staff' && Math.random() < DOOR.keycardDrop
+    && !hasItem(attacker, 'keycard') && attacker.inventory.length < MAX_SLOTS) {
+    attacker.inventory.push(makeSlot('keycard'));
+    notify(attacker, `You lifted ${target.name}'s keycard`);
+  }
 }
 // Status that every fresh (or respawned) player starts with.
 const FRESH_STATUS = () => ({
   downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
-  look: null, combo: null, armor: 1, mask: false, jammed: false, carrying: null, carriedBy: null, air: 0,
+  look: null, combo: null, armor: 1, mask: false, nightVision: false, jammed: false, carrying: null, carriedBy: null, air: 0,
+  stamina: STAMINA.max, exhausted: false, sprintedAt: 0, work: null, vehicle: null, seat: null,
 });
+function sendStamina(player) {
+  const value = Math.round(player.stamina);
+  if (value === player.sentStamina && player.exhausted === player.sentExhausted) return;
+  player.sentStamina = value; player.sentExhausted = player.exhausted;
+  io.to(player.id).emit('stamina', { value, max: STAMINA.max, exhausted: player.exhausted });
+}
+function spendStamina(player, amount) {
+  player.stamina = Math.max(0, player.stamina - amount);
+  if (player.stamina === 0) player.exhausted = true;
+  sendStamina(player);
+}
 function respawn(player) {
   if (player.carrying || player.carriedBy) releaseCarry(player);
+  if (player.vehicle) leaveVehicle(player);
   const spawn = SPAWNS[player.role];
   Object.assign(player, FRESH_STATUS(), {
     x: spawn.x, z: spawn.z, floor: spawn.floor, y: FLOOR_Y[spawn.floor],
@@ -284,9 +327,19 @@ function detonate(owner, floor, x, z, fx) {
   effect({ type: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
   if (ZONE_TYPES.has(fx.type)) {
     const id = nextEntityId++;
-    zones.set(id, { id, kind: fx.type, owner: owner.id, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, hps: fx.hps, until: Date.now() + fx.duration * 1000 });
+    zones.set(id, { id, kind: fx.type, owner: owner.id, ownerSnapshot: owner, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, hps: fx.hps, until: Date.now() + fx.duration * 1000 });
     effect({ type: 'zone', id, kind: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
     return;
+  }
+  if (fx.maxDamage || fx.type === 'shock') {
+    for (const device of devices.values()) {
+      if (device.floor === floor && hostile(owner, device.owner) && Math.hypot(device.x - x, device.z - z) <= fx.radius) damageDevice(device, fx.maxDamage || 25);
+    }
+  }
+  if (fx.maxDamage) {
+    for (const door of doors) {
+      if (door.floor === floor && !isBroken(door) && Math.hypot(door.x - x, door.z - z) <= fx.radius + 1) damageDoor(door, fx.maxDamage, players.get(owner.id) ?? null);
+    }
   }
   for (const target of players.values()) {
     if (target.floor !== floor) continue;
@@ -313,7 +366,28 @@ function ownerSnapshot(player) {
 const USE_HANDLERS = {
   melee(player, def) {
     effect({ type: 'swing', by: player.id });
-    for (const target of targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other))) meleeHit(player, target, def);
+    const targets = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other));
+    for (const target of targets) meleeHit(player, target, def);
+    for (const device of devicesInFront(player, def.range, def.arc)) damageDevice(device, def.damage * power(player));
+    // Patients with nobody to hit batter the security door in front of them instead.
+    if (!targets.length && teamOf(player.role) === 'patient') {
+      const door = doorInFront(player, def.range + 1);
+      if (door && !isBroken(door)) damageDoor(door, def.damage * power(player), player);
+    }
+    return true;
+  },
+  weld(player, def) {
+    const door = doorInFront(player, def.range);
+    if (!door) { notify(player, 'No security door in front of you'); return false; }
+    effect({ type: 'spray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: door.x, z2: door.z });
+    if (isBroken(door)) {
+      Object.assign(door, { brokenUntil: 0, hp: DOOR.hp });
+      notify(player, `${door.room} door repaired`);
+    } else {
+      door.weldedUntil = Date.now() + def.seconds * 1000;
+      notify(player, `${door.room} door welded shut · keycards won't open it`);
+    }
+    doorsDirty = true;
     return true;
   },
   ray(player, def) {
@@ -341,12 +415,12 @@ const USE_HANDLERS = {
     for (const other of players.values()) {
       if (other.floor !== player.floor || isDown(other) || Math.hypot(other.x - player.x, other.z - player.z) > def.radius) continue;
       if (other !== player && wallBetween(player.floor, player.x, player.z, other.x, other.z)) continue;
-      if (hostile(player, other)) {
-        if (def.stun) stun(other, def.stun);
-        if (def.slow) slow(other, def.slow);
-      } else if (def.ally) {
+      if (def.ally && allied(player, other)) {
         boost(other, def.ally.speed, def.ally.duration);
         if (other !== player) notify(other, `${player.name} rallies you`);
+      } else if (hostile(player, other)) {
+        if (def.stun) stun(other, def.stun);
+        if (def.slow) slow(other, def.slow);
       }
     }
     return true;
@@ -364,6 +438,8 @@ const USE_HANDLERS = {
   // Charges forward and bowls over the first enemy in the way.
   dash(player, def) {
     if (isRooted(player)) { notify(player, 'You cannot charge while held'); return false; }
+    if (def.staminaCost && player.stamina < def.staminaCost) { notify(player, 'Too tired to charge'); return false; }
+    if (def.staminaCost) spendStamina(player, def.staminaCost);
     const dir = facing(player);
     const x1 = player.x, z1 = player.z;
     let victim = null;
@@ -411,6 +487,22 @@ const USE_HANDLERS = {
     }, def.flight * 1000);
     return true;
   },
+  device(player, def) {
+    const dir = facing(player), spec = def.device, id = nextEntityId++;
+    devices.set(id, {
+      id, type: spec.type, spec, owner: ownerSnapshot(player), floor: player.floor, x: player.x + dir.x * 1.5, z: player.z + dir.z * 1.5,
+      hp: spec.hp, until: Date.now() + spec.life * 1000, nextAt: Date.now() + 500,
+    });
+    devicesDirty = true;
+    return true;
+  },
+  // Shows the user's whole team where every enemy is, through walls, for a few seconds.
+  reveal(player, def) {
+    const targets = [...players.values()].filter(other => hostile(player, other) && !isDown(other));
+    revealTo(teamOf(player.role), targets, def.duration);
+    notify(player, `${targets.length} hostile${targets.length === 1 ? '' : 's'} located`);
+    return true;
+  },
   // Sets a zone down right where the user stands.
   deploy(player, def) {
     detonate(ownerSnapshot(player), player.floor, player.x, player.z, def.effect);
@@ -430,6 +522,7 @@ const USE_HANDLERS = {
   wear(player, def) {
     if (def.armor) player.armor = Math.min(player.armor, def.armor);
     if (def.mask) player.mask = true;
+    if (def.nightVision) player.nightVision = true;
     notify(player, `${def.name} on · until you are knocked out`);
     return true;
   },
@@ -460,6 +553,9 @@ const USE_HANDLERS = {
     const [target] = targetsInFront(player, def.range, def.arc, other => other.role === 'patient' && isStunned(other));
     if (!target) { notify(player, 'Arrest needs a stunned or knocked-out patient in front of you'); return false; }
     if (target.carriedBy) releaseCarry(target);
+    // Whatever contraband the patient carried is confiscated, and the arresting officer is paid for it.
+    const seized = target.inventory.reduce((sum, slot) => sum + (ITEMS[slot.item].value ?? 0), 0);
+    reward(player, 30 + Math.round(seized / 2), 25, seized ? 'Arrest · contraband seized' : 'Arrest');
     const spawn = SPAWNS.patient;
     respawn(target);
     Object.assign(target, { x: spawn.x, z: spawn.z, floor: spawn.floor, holdUntil: Date.now() + def.hold * 1000 });
@@ -481,7 +577,7 @@ const USE_HANDLERS = {
     return true;
   },
   heal(player, def) {
-    const [target] = targetsInFront(player, def.range, def.arc, other => !hostile(player, other) && !isDown(other) && other.health < other.maxHealth);
+    const [target] = targetsInFront(player, def.range, def.arc, other => allied(player, other) && !isDown(other) && other.health < other.maxHealth);
     const patient = target || player;
     if (patient.health >= patient.maxHealth) { notify(player, 'Nobody here needs healing'); return false; }
     patient.health = Math.min(patient.maxHealth, patient.health + def.heal);
@@ -493,6 +589,11 @@ const USE_HANDLERS = {
   },
   consume(player, def) {
     if (def.heal) player.health = Math.min(player.maxHealth, player.health + def.heal);
+    if (def.stamina) {
+      player.stamina = Math.min(STAMINA.max, player.stamina + def.stamina);
+      if (player.stamina >= STAMINA.recover) player.exhausted = false;
+      sendStamina(player);
+    }
     if (def.speed) boost(player, def.speed.multiplier, def.speed.duration);
     if (def.rage) { player.rageUntil = Date.now() + def.rage.duration * 1000; player.rageMultiplier = def.rage.multiplier; }
     effect({ type: 'heal', x: player.x, z: player.z, floor: player.floor });
@@ -542,25 +643,421 @@ function pickupList() {
   return pickups.filter(pickup => pickup.item).map(({ id, floor, x, z, item }) => ({ id, floor, x, z, item }));
 }
 
+// ---- Devices -------------------------------------------------------------------------------------
+
+function devicesInFront(player, range, arc) {
+  const dir = facing(player);
+  return [...devices.values()].filter(device => {
+    if (device.floor !== player.floor || !hostile(player, device.owner)) return false;
+    const dx = device.x - player.x, dz = device.z - player.z, distance = Math.hypot(dx, dz);
+    return distance <= range + 0.5 && (distance < 0.5 || Math.acos(Math.max(-1, Math.min(1, (dx * dir.x + dz * dir.z) / distance))) <= arc / 2);
+  });
+}
+function damageDevice(device, amount) {
+  device.hp -= amount;
+  effect({ type: 'hit', x: device.x, z: device.z, floor: device.floor });
+  if (device.hp <= 0) removeDevice(device, true);
+}
+function removeDevice(device, destroyed) {
+  devices.delete(device.id);
+  devicesDirty = true;
+  if (destroyed) effect({ type: 'explosion', x: device.x, z: device.z, floor: device.floor, radius: 1.4 });
+  const owner = players.get(device.owner.id);
+  if (owner) notify(owner, `${ITEMS[device.type].name} ${destroyed ? 'destroyed' : 'powered down'}`);
+}
+function revealTo(team, targets, seconds) {
+  const list = targets.map(({ id, floor, x, z }) => ({ id, floor, x, z }));
+  for (const player of players.values()) if (teamOf(player.role) === team) io.to(player.id).emit('reveal', { targets: list, duration: seconds });
+}
+function updateDevices(now) {
+  for (const device of devices.values()) {
+    if (now >= device.until) { removeDevice(device, false); continue; }
+    const spec = device.spec, owner = players.get(device.owner.id);
+    // Combat drones hover off their owner's shoulder.
+    if (spec.follow && owner && !isDown(owner, now)) {
+      const dir = facing(owner);
+      const x = owner.x - dir.z * 1.6, z = owner.z + dir.x * 1.6;
+      if (device.floor !== owner.floor || Math.hypot(device.x - x, device.z - z) > 0.05) { Object.assign(device, { floor: owner.floor, x, z }); devicesDirty = true; }
+    }
+    if (now < device.nextAt) continue;
+    device.nextAt = now + spec.every * 1000;
+    const near = other => other.floor === device.floor && !isDown(other, now) && !wallBetween(device.floor, device.x, device.z, other.x, other.z);
+    if (spec.stun) {
+      let target = null, best = spec.range;
+      for (const other of players.values()) {
+        const distance = Math.hypot(other.x - device.x, other.z - device.z);
+        if (hostile(device.owner, other) && near(other) && distance < best) { target = other; best = distance; }
+      }
+      if (target) {
+        effect({ type: 'ray', floor: device.floor, x1: device.x, z1: device.z, x2: target.x, z2: target.z, color: 0xff3b2f });
+        if (!jammedAt(device, target)) stun(target, spec.stun);
+      }
+    }
+    if (spec.reveal) {
+      const spotted = [...players.values()].filter(other => hostile(device.owner, other) && other.floor === device.floor && !isDown(other, now)
+        && Math.hypot(other.x - device.x, other.z - device.z) <= spec.radius);
+      if (spotted.length) revealTo(teamOf(device.owner.role), spotted, spec.every + 0.6);
+    }
+    if (spec.heal) {
+      for (const other of players.values()) {
+        if (!allied(device.owner, other) || !near(other) || other.health >= other.maxHealth || Math.hypot(other.x - device.x, other.z - device.z) > spec.radius) continue;
+        other.health = Math.min(other.maxHealth, other.health + spec.heal);
+        effect({ type: 'heal', x: other.x, z: other.z, floor: other.floor });
+        sendSelf(other);
+      }
+    }
+  }
+  if (devicesDirty) { devicesDirty = false; io.emit('devices', deviceList()); }
+}
+// A drone flying into an enemy jammer loses its sting.
+const jammedAt = (device, _target) => [...zones.values()].some(zone => zone.kind === 'jam' && zone.floor === device.floor
+  && zone.ownerTeam !== teamOf(device.owner.role) && Math.hypot(zone.x - device.x, zone.z - device.z) <= zone.radius);
+const deviceList = () => [...devices.values()].map(({ id, type, floor, x, z, hp, spec }) => ({ id, type, floor, x, z, health: hp / spec.hp }));
+
+// ---- Chat and radio --------------------------------------------------------------------------------
+
+const CHAT = { length: 120, gapMs: 800 };
+// Staff talk over the radio; a patient carrying a stolen radio hears it too. Patients' team chat
+// stays among patients, and `all` reaches everyone.
+const hearsRadio = player => teamOf(player.role) === 'staff' || hasItem(player, 'stolenRadio');
+function chat(player, data) {
+  const now = Date.now();
+  if (now - (player.lastChat ?? 0) < CHAT.gapMs) return;
+  const text = String(data.text ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, CHAT.length);
+  if (!text) return;
+  player.lastChat = now;
+  const channel = data.channel === 'all' ? 'all' : teamOf(player.role) === 'staff' ? 'radio' : 'team';
+  const message = { from: player.name, role: player.role, channel, text };
+  for (const other of players.values()) {
+    const hears = channel === 'all' || (channel === 'radio' ? hearsRadio(other) : teamOf(other.role) === 'patient');
+    if (hears) io.to(other.id).emit('chat', { ...message, intercepted: channel === 'radio' && teamOf(other.role) !== 'staff' });
+  }
+}
+// Facility alarms go to staff as a toast and over the radio, where radio thieves hear them too.
+function alarm(text) {
+  for (const other of players.values()) {
+    if (teamOf(other.role) === 'staff') notify(other, `Alarm · ${text}`);
+    if (hearsRadio(other)) io.to(other.id).emit('chat', { from: 'Control', role: 'system', channel: 'radio', text, intercepted: teamOf(other.role) !== 'staff' });
+  }
+}
+
+// ---- Security doors --------------------------------------------------------------------------------
+
+const isBroken = (door, now = Date.now()) => door.brokenUntil > now;
+const isWelded = (door, now = Date.now()) => door.weldedUntil > now;
+// Staff always get through; patients need a keycard (useless on a welded door) or a broken door.
+function canPass(player, door, now = Date.now()) {
+  if (isBroken(door, now) || teamOf(player.role) === 'staff') return true;
+  return hasItem(player, 'keycard') && !isWelded(door, now);
+}
+// Whether a door that is shut for `player` stands between (x1, z1) and (x2, z2). Someone already
+// standing in the doorway may always step out of it.
+function doorBlocks(player, x1, z1, x2, z2) {
+  for (const door of doors) {
+    if (door.floor !== player.floor || canPass(player, door)) continue;
+    const box = door.box, m = PLAYER_RADIUS;
+    const inside = x1 > box.minX - m && x1 < box.maxX + m && z1 > box.minZ - m && z1 < box.maxZ + m;
+    if (!inside && segmentHitsBox(box, x1, z1, x2, z2, m)) return true;
+  }
+  return false;
+}
+function doorInFront(player, range) {
+  const dir = facing(player);
+  let best = null, bestDistance = range;
+  for (const door of doors) {
+    if (door.floor !== player.floor) continue;
+    const dx = door.x - player.x, dz = door.z - player.z, distance = Math.hypot(dx, dz);
+    if (distance > bestDistance || (distance > 0.5 && (dx * dir.x + dz * dir.z) / distance < 0.5)) continue;
+    best = door; bestDistance = distance;
+  }
+  return best;
+}
+function damageDoor(door, amount, attacker) {
+  door.hp -= amount;
+  effect({ type: 'block', x: door.x, z: door.z, floor: door.floor });
+  if (door.hp > 0) return;
+  Object.assign(door, { hp: DOOR.hp, brokenUntil: Date.now() + DOOR.brokenFor, weldedUntil: 0 });
+  doorsDirty = true;
+  effect({ type: 'explosion', x: door.x, z: door.z, floor: door.floor, radius: 1.5 });
+  if (attacker) reward(attacker, 10, 15, `Broke the ${door.room} door`);
+  alarm(`${door.room} door broken`);
+}
+function updateDoors(now) {
+  for (const door of doors) {
+    if (door.brokenUntil && door.brokenUntil <= now) { door.brokenUntil = 0; doorsDirty = true; }
+    if (door.weldedUntil && door.weldedUntil <= now) { door.weldedUntil = 0; doorsDirty = true; }
+    // Doors slide open for anyone allowed through who walks up to them.
+    let open = false;
+    for (const player of players.values()) {
+      if (player.floor === door.floor && !isDown(player, now) && Math.hypot(player.x - door.x, player.z - door.z) < DOOR.openRange && canPass(player, door, now)) { open = true; break; }
+    }
+    if (open !== door.open) { door.open = open; doorsDirty = true; }
+  }
+  if (doorsDirty) { doorsDirty = false; io.emit('doors', doorList(now)); }
+}
+const doorList = (now = Date.now()) => doors.map(door => ({ id: door.id, open: door.open, broken: isBroken(door, now), welded: isWelded(door, now) }));
+
+// ---- Facility: stations, jobs, credits, shops, escape --------------------------------------------
+
+const levelOf = xp => 1 + Math.floor(Math.sqrt((xp || 0) / 60));
+const JOBS = {
+  laundry: { label: 'Doing laundry', seconds: 4, credits: 15, xp: 20, consumes: true },
+  paint: { label: 'Painting', seconds: 6, credits: 25, xp: 30, consumes: false },
+};
+const EXIT = { keycard: 4, pry: 12, credits: 200, xp: 150, pryTools: ['crowbar', 'fireAxe', 'rebarHammer'] };
+function reward(player, credits, xp, reason) {
+  const before = levelOf(player.xp);
+  player.credits += credits; player.xp += xp;
+  if (reason) notify(player, `+${credits} ¢ · +${xp} XP · ${reason}`);
+  if (levelOf(player.xp) > before) notify(player, `Level ${levelOf(player.xp)}!`);
+  sendSelf(player);
+}
+const hasItem = (player, item) => player.inventory.some(slot => slot.item === item);
+function takeItem(player, item) {
+  const slot = player.inventory.find(entry => entry.item === item);
+  if (!slot) return;
+  player.inventory = player.inventory.filter(entry => entry !== slot);
+  if (player.equipped === slot) player.equipped = null;
+}
+function nearestStation(player) {
+  let best = null, bestDistance = STATION_RANGE;
+  for (const station of STATIONS) {
+    if (station.floor !== player.floor) continue;
+    const distance = Math.hypot(station.x - player.x, station.z - player.z);
+    if (distance <= bestDistance) { best = station; bestDistance = distance; }
+  }
+  return best;
+}
+// Some stations take a while: stand still until the work is done. Moving or getting hit cancels it.
+function startWork(player, station, label, seconds, done) {
+  player.work = { station: station.id, label, until: Date.now() + seconds * 1000, total: seconds * 1000, x: player.x, z: player.z, floor: player.floor, done };
+  sendSelf(player);
+}
+function cancelWork(player, message) {
+  if (!player.work) return;
+  player.work = null;
+  if (message) notify(player, message);
+  sendSelf(player);
+}
+function shopList(player, station) {
+  return Object.entries(ITEMS)
+    .filter(([item, def]) => def.price && (def.team === 'all' || def.team === station.team) && canUse(player, item))
+    .map(([item, def]) => ({ item, price: def.price }));
+}
+function escape(player) {
+  reward(player, EXIT.credits, EXIT.xp, 'Escaped!');
+  for (const other of players.values()) if (other !== player) notify(other, `${player.name} escaped the facility!`);
+  respawn(player);
+}
+const STATION_HANDLERS = {
+  shop(player, station, socket) {
+    if (teamOf(player.role) !== station.team) { notify(player, `${station.label} · not for you`); return; }
+    const value = player.inventory.reduce((sum, slot) => sum + (ITEMS[slot.item].value ?? 0), 0);
+    socket.emit('shop', { station: station.id, label: station.label, credits: player.credits, items: shopList(player, station), sell: value });
+  },
+  job(player, station) {
+    const def = JOBS[station.job];
+    const tool = player.inventory.find(slot => ITEMS[slot.item].job === station.job);
+    if (!tool) { notify(player, station.job === 'laundry' ? 'Bring some laundry' : 'You need a paintbrush'); return; }
+    startWork(player, station, def.label, def.seconds, () => {
+      if (def.consumes) takeItem(player, tool.item);
+      reward(player, def.credits, def.xp, station.label);
+    });
+  },
+  exit(player, station) {
+    if (teamOf(player.role) !== 'patient') { notify(player, 'The exit is locked down'); return; }
+    if (hasItem(player, 'keycard')) {
+      startWork(player, station, 'Swiping keycard', EXIT.keycard, () => { takeItem(player, 'keycard'); escape(player); });
+      return;
+    }
+    const tool = EXIT.pryTools.find(item => hasItem(player, item));
+    if (!tool) { notify(player, 'Exit locked · find a keycard or something to pry it open'); return; }
+    startWork(player, station, `Prying with ${ITEMS[tool].name}`, EXIT.pry, () => escape(player));
+    alarm('someone is forcing the main exit!');
+  },
+  breaker(player, station) {
+    const out = blackoutUntil > Date.now();
+    if (teamOf(player.role) === 'patient') {
+      if (out) { notify(player, 'The power is already out'); return; }
+      startWork(player, station, 'Cutting the power', BLACKOUT.cut, () => {
+        setBlackout(Date.now() + BLACKOUT.duration);
+        reward(player, 20, 30, 'Lights out');
+        alarm('power cut · breaker panel in Electrical');
+      });
+      return;
+    }
+    if (!out) { notify(player, 'The power is on'); return; }
+    startWork(player, station, 'Restoring power', BLACKOUT.restore, () => {
+      setBlackout(0);
+      reward(player, 20, 20, 'Power restored');
+    });
+  },
+};
+function setBlackout(until) {
+  blackoutUntil = until;
+  io.emit('world', worldState());
+}
+const worldState = () => ({ blackout: Math.max(0, blackoutUntil - Date.now()) });
+function interact(player, socket) {
+  if (player.vehicle) { leaveVehicle(player); return; }
+  if (isStunned(player) || isRooted(player)) return;
+  if (player.work) { cancelWork(player, 'Stopped'); return; }
+  const station = nearestStation(player), vehicle = nearestVehicle(player);
+  const stationDistance = station ? Math.hypot(station.x - player.x, station.z - player.z) : Infinity;
+  if (vehicle && Math.hypot(vehicle.x - player.x, vehicle.z - player.z) < stationDistance) { board(player, vehicle); return; }
+  if (station) STATION_HANDLERS[station.type]?.(player, station, socket);
+}
+
+// ---- Vehicles ------------------------------------------------------------------------------------
+
+const vehicleOf = player => vehicles.find(vehicle => vehicle.id === player.vehicle);
+function nearestVehicle(player) {
+  let best = null, bestDistance = VEHICLE.range;
+  for (const vehicle of vehicles) {
+    const distance = Math.hypot(vehicle.x - player.x, vehicle.z - player.z);
+    if (vehicle.floor === player.floor && distance <= bestDistance) { best = vehicle; bestDistance = distance; }
+  }
+  return best;
+}
+// The driver takes the free driving seat; anyone friendly to the driver may take a free passenger seat.
+function board(player, vehicle) {
+  const def = vehicle.def;
+  const mayDrive = def.team === 'all' || def.team === teamOf(player.role);
+  if (!vehicle.driver && mayDrive) {
+    vehicle.driver = player.id;
+    Object.assign(player, { vehicle: vehicle.id, seat: 'driver', x: vehicle.x, z: vehicle.z });
+    notify(player, `${def.verb} the ${def.name.toLowerCase()} · E to get out`);
+  } else if (def.seats > 1 && !vehicle.passenger && (!vehicle.driver || allied(player, players.get(vehicle.driver) ?? player))) {
+    vehicle.passenger = player.id;
+    Object.assign(player, { vehicle: vehicle.id, seat: 'passenger' });
+    notify(player, `Riding the ${def.name.toLowerCase()} · E to get out`);
+  } else {
+    notify(player, mayDrive ? 'No free seat' : `Only staff may drive the ${def.name.toLowerCase()}`);
+    return;
+  }
+  io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
+  vehiclesDirty = true;
+  sendSelf(player);
+}
+function leaveVehicle(player) {
+  const vehicle = vehicleOf(player);
+  if (vehicle) {
+    if (vehicle.driver === player.id) vehicle.driver = null;
+    if (vehicle.passenger === player.id) vehicle.passenger = null;
+    vehicle.idleSince = Date.now();
+    // Step off beside the vehicle rather than standing inside it.
+    const side = { x: Math.cos(vehicle.yaw), z: -Math.sin(vehicle.yaw) };
+    for (const offset of [1.8, -1.8, 0]) {
+      const x = vehicle.x + side.x * offset, z = vehicle.z + side.z * offset;
+      if (spotFree(vehicle.floor, x, z) && !wallBetween(vehicle.floor, vehicle.x, vehicle.z, x, z)) { player.x = x; player.z = z; break; }
+    }
+    io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
+  }
+  Object.assign(player, { vehicle: null, seat: null, air: 0 });
+  vehiclesDirty = true;
+  sendSelf(player);
+}
+function updateVehicles(now, dt) {
+  for (const vehicle of vehicles) {
+    const driver = players.get(vehicle.driver), passenger = players.get(vehicle.passenger);
+    if (vehicle.driver && (!driver || isStunned(driver, now))) { if (driver) leaveVehicle(driver); else vehicle.driver = null; vehiclesDirty = true; }
+    if (vehicle.passenger && !passenger) { vehicle.passenger = null; vehiclesDirty = true; }
+    const pilot = players.get(vehicle.driver);
+    if (pilot) {
+      const moved = Math.hypot(pilot.x - vehicle.x, pilot.z - vehicle.z);
+      const speed = moved / dt;
+      if (moved > 0.01 || pilot.yaw !== vehicle.yaw) {
+        Object.assign(vehicle, { x: pilot.x, z: pilot.z, yaw: pilot.yaw });
+        vehiclesDirty = true;
+      }
+      if (vehicle.def.ram && speed >= vehicle.def.ram.minSpeed) ram(vehicle, pilot, now);
+    } else if (!vehicle.passenger && now - vehicle.idleSince > VEHICLE.idleReturnMs && (vehicle.x !== vehicle.home.x || vehicle.z !== vehicle.home.z)) {
+      // Abandoned vehicles are towed back to where they belong.
+      Object.assign(vehicle, { x: vehicle.home.x, z: vehicle.home.z, yaw: 0 });
+      vehiclesDirty = true;
+    }
+    const rider = players.get(vehicle.passenger);
+    if (rider) { Object.assign(rider, { x: vehicle.x, z: vehicle.z, floor: vehicle.floor, yaw: vehicle.yaw, air: VEHICLE.seatHeight }); dirty = true; }
+  }
+  if (vehiclesDirty) { vehiclesDirty = false; io.emit('vehicles', vehicleList()); }
+}
+function ram(vehicle, pilot, now) {
+  const fx = vehicle.def.ram;
+  for (const target of players.values()) {
+    if (target.floor !== vehicle.floor || target.vehicle === vehicle.id || !hostile(pilot, target) || isDown(target, now)) continue;
+    if (Math.hypot(target.x - vehicle.x, target.z - vehicle.z) > 2.2 || (vehicle.rammed.get(target.id) ?? 0) > now) continue;
+    vehicle.rammed.set(target.id, now + 1500);
+    damage(target, fx.damage, pilot);
+    stun(target, fx.stun);
+    pushAway(vehicle, target, fx.push);
+    notify(target, `Run over by ${pilot.name}`);
+  }
+}
+const vehicleList = () => vehicles.map(({ id, type, floor, x, z, yaw, driver, passenger }) => ({ id, type, floor, x, z, yaw, driver, passenger }));
+function buy(player, item) {
+  const station = nearestStation(player);
+  const def = ITEMS[item];
+  if (!station || station.type !== 'shop' || teamOf(player.role) !== station.team || !def?.price) return;
+  if (!shopList(player, station).some(entry => entry.item === item)) return;
+  if (player.credits < def.price) { notify(player, 'Not enough credits'); return; }
+  const owned = player.inventory.find(slot => slot.item === item);
+  if (owned && owned.uses === null) { notify(player, 'You already have one'); return; }
+  if (!owned && player.inventory.length >= MAX_SLOTS) { notify(player, 'Inventory full'); return; }
+  player.credits -= def.price;
+  if (owned) owned.uses += def.uses; else player.inventory.push(makeSlot(item));
+  notify(player, `Bought ${def.name}`);
+  sendSelf(player);
+}
+function sellContraband(player) {
+  const station = nearestStation(player);
+  if (!station || station.type !== 'shop' || station.team !== 'patient' || teamOf(player.role) !== 'patient') return;
+  const goods = player.inventory.filter(slot => ITEMS[slot.item].value);
+  if (!goods.length) return;
+  const value = goods.reduce((sum, slot) => sum + ITEMS[slot.item].value, 0);
+  player.inventory = player.inventory.filter(slot => !goods.includes(slot));
+  if (goods.includes(player.equipped)) player.equipped = null;
+  reward(player, value, Math.round(value / 4), 'Sold contraband');
+}
+function updateWork(player, now) {
+  const work = player.work;
+  if (!work) return;
+  if (isStunned(player, now) || player.floor !== work.floor || Math.hypot(player.x - work.x, player.z - work.z) > 0.8) { cancelWork(player, 'Interrupted'); return; }
+  if (now < work.until) return;
+  player.work = null;
+  work.done();
+  sendSelf(player);
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expires < now) sessions.delete(token);
 
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
+  updateDoors(now);
+  updateVehicles(now, TICK_MS / 1000);
+  updateDevices(now);
+  if (blackoutUntil && blackoutUntil <= now) setBlackout(0);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
+    updateWork(player, now);
+    if (now - player.sprintedAt > 300 && player.stamina < STAMINA.max) {
+      player.stamina = Math.min(STAMINA.max, player.stamina + STAMINA.regen * TICK_MS / 1000);
+      if (player.exhausted && player.stamina >= STAMINA.recover) player.exhausted = false;
+    }
+    sendStamina(player);
     player.jammed = false;
     for (const zone of zones.values()) {
       if (player.floor !== zone.floor || Math.hypot(player.x - zone.x, player.z - zone.z) > zone.radius) continue;
-      const enemyZone = teamOf(player.role) !== zone.ownerTeam;
+      // Fire and gas hurt whoever is hostile to the thrower; healing mist and jammers go by team.
+      const enemyZone = hostile(zone.ownerSnapshot, player), enemyTeam = teamOf(player.role) !== zone.ownerTeam;
       if (zone.kind === 'fire' && enemyZone) damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
       else if (zone.kind === 'gas' && enemyZone && !player.mask) {
         damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
         player.slowUntil = Math.max(player.slowUntil, now + 600);
-      } else if (zone.kind === 'healing' && !enemyZone && !isDown(player, now) && player.health < player.maxHealth) {
+      } else if (zone.kind === 'healing' && !enemyTeam && !isDown(player, now) && player.health < player.maxHealth) {
         player.health = Math.min(player.maxHealth, player.health + zone.hps * TICK_MS / 1000);
         sendSelf(player);
-      } else if (zone.kind === 'jam' && enemyZone) player.jammed = true;
+      } else if (zone.kind === 'jam' && enemyTeam) player.jammed = true;
     }
     // Carried players ride on the carrier's shoulders.
     if (player.carrying) {
@@ -600,6 +1097,10 @@ setInterval(() => {
 io.on('connection', socket => {
   socket.emit('serverReady', { ok: true, version: VERSION });
   socket.emit('pickups', pickupList());
+  socket.emit('doors', doorList());
+  socket.emit('world', worldState());
+  socket.emit('vehicles', vehicleList());
+  socket.emit('devices', deviceList());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
   for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 
@@ -632,10 +1133,11 @@ io.on('connection', socket => {
       id: socket.id, name: cleanName(data.name), role,
       x: spawn.x, y: FLOOR_Y[spawn.floor], z: spawn.z, floor: spawn.floor, yaw: 0,
       health: MAX_HEALTH[role], maxHealth: MAX_HEALTH[role], inventory: freshLoadout(role), equipped: null,
-      ...FRESH_STATUS(),
+      ...FRESH_STATUS(), credits: 0, xp: 0,
       ...(resumed && {
+        credits: resumed.credits, xp: resumed.xp,
         x: resumed.x, y: resumed.y, z: resumed.z, floor: resumed.floor, health: resumed.health,
-        inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look,
+        inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look, stamina: resumed.stamina,
       }),
       session: token, lastMove: Date.now(),
     };
@@ -676,10 +1178,21 @@ io.on('connection', socket => {
     const z = finiteClamp(data.z, -BOUNDS.z, BOUNDS.z, player.z);
     // Allow some slack for network jitter; anything faster than sprinting is a teleport, and
     // nobody walks through walls.
-    const allowed = SPRINT_SPEED * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
+    const allowed = (player.exhausted ? WALK_SPEED : SPRINT_SPEED) * Math.max(1, speedMultiplier(player, now)) * elapsed * 1.5 + 1.5;
     let corrected = false;
-    if (Math.hypot(x - player.x, z - player.z) <= allowed && !wallBetween(player.floor, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
-    if (Number.isInteger(data.floor) && data.floor !== player.floor) {
+    const step = Math.hypot(x - player.x, z - player.z);
+    if (step <= allowed && !wallBetween(player.floor, player.x, player.z, x, z) && !doorBlocks(player, player.x, player.z, x, z)) { player.x = x; player.z = z; } else corrected = true;
+    if (data.sprint === true && step > 0.05 && !corrected && !player.exhausted) {
+      player.sprintedAt = now;
+      spendStamina(player, STAMINA.drain * elapsed);
+    }
+    // Vehicles cannot take the stairs.
+    if (player.seat === 'driver' && stairHeight(player.floor, player.x, player.z) > 0) {
+      const vehicle = vehicleOf(player);
+      Object.assign(player, { x: vehicle.x, z: vehicle.z }); corrected = true;
+    }
+    if (Number.isInteger(data.floor) && data.floor !== player.floor && player.seat === 'driver') corrected = true;
+    else if (Number.isInteger(data.floor) && data.floor !== player.floor) {
       if (Math.abs(data.floor - player.floor) === 1 && data.floor >= 0 && data.floor < FLOOR_Y.length
         && (onStairsBetween(player.floor, data.floor, player.x, player.z) || onStairsBetween(player.floor, data.floor, x, z))) {
         player.floor = data.floor;
@@ -692,6 +1205,23 @@ io.on('connection', socket => {
     dirty = true;
   });
 
+  socket.on('chat', data => {
+    const player = players.get(socket.id);
+    if (player && isObject(data)) chat(player, data);
+  });
+  socket.on('interact', () => {
+    const player = players.get(socket.id);
+    if (player) interact(player, socket);
+  });
+  socket.on('buy', data => {
+    const player = players.get(socket.id);
+    if (player && isObject(data) && typeof data.item === 'string') buy(player, data.item);
+  });
+  socket.on('sell', () => {
+    const player = players.get(socket.id);
+    if (player) sellContraband(player);
+  });
+
   socket.on('useAbility', data => {
     const player = players.get(socket.id);
     if (!player) return;
@@ -702,6 +1232,7 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     const player = players.get(socket.id);
     if (player && (player.carrying || player.carriedBy)) releaseCarry(player);
+    if (player?.vehicle) leaveVehicle(player);
     if (player?.session) sessions.set(player.session, { player, expires: Date.now() + SESSION_TTL_MS });
     players.delete(socket.id);
     dirty = true;

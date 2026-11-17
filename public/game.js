@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-1';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-6';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
-import { buildInterior } from './interior.js?v=20261115-3';
+import { buildInterior, MAINS_LIGHTING } from './interior.js?v=20261117-1';
+import { createWorld } from './world.js?v=20261117-8';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -10,7 +11,7 @@ const socket = window.io ? io({ transports: ['websocket', 'polling'] }) : null;
 const ROLES = {
   orderly: { name: 'Orderly', color: 0x2878d0, items: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'], ability: 'Containment', maxHealth: 115 },
   medic: { name: 'Medic', color: 0x35b987, items: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'], ability: 'Field treatment', maxHealth: 100 },
-  director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'], ability: 'Override access', maxHealth: 100 },
+  director: { name: 'Facility Director', color: 0x9670d5, items: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet', 'hostileDetector'], ability: 'Override access', maxHealth: 100 },
   patient: { name: 'Patient', color: 0xc85953, items: ['glassShard', 'shove'], ability: 'Adrenaline', maxHealth: 100 },
 };
 for (const [role, def] of Object.entries(ROLES)) Object.assign(def, LAYOUT.SPAWNS[role]);
@@ -34,7 +35,7 @@ const state = {
   stunnedUntil: 0, downUntil: 0, slowedUntil: 0, rootedUntil: 0, ragingUntil: 0, boostedUntil: 0, speed: 1, look: null,
   jammed: false, armor: false, mask: false, carrying: false, carried: false,
   // Height of the steps underfoot, and how far above them a jump has taken you.
-  ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false,
+  ground: 0, air: 0, vy: 0, jumpQueued: false, sprinting: false, stamina: 100, maxStamina: 100, exhausted: false, sprintingNow: false,
 };
 const keys = new Set();
 const remoteActors = new Map();
@@ -69,8 +70,9 @@ document.body.appendChild(renderer.domElement);
 
 // Indoors: a soft fluorescent wash from above, plus a near-vertical key light that follows the
 // player so characters and furniture get crisp contact shadows without the walls striping the floor.
-scene.add(new THREE.HemisphereLight(0xeef6ff, 0x5b5f5c, 1.75));
-scene.add(new THREE.AmbientLight(0xdfe8ef, 0.35));
+const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x5b5f5c, 1.75);
+const ambientLight = new THREE.AmbientLight(0xdfe8ef, 0.35);
+scene.add(hemiLight, ambientLight);
 const keyLight = new THREE.DirectionalLight(0xfff4e2, 1.6);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.setScalar(isTouch ? 1024 : 2048);
@@ -282,7 +284,7 @@ function applyActorStatus(actor, status) {
     actor.userData.front?.clear();
     // Shields are carried squarely in front of the body; everything else sits in the hand.
     if (item && ITEMS[item]?.shield) frontMount(actor).add(makeItemModel(item, ITEMS[item].color));
-    else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color));
+    else if (item && ITEMS[item]) actor.userData.hand.add(makeItemModel(item, ITEMS[item].color, { held: true }));
   }
   actor.userData.down = Boolean(status.down);
   actor.userData.carried = Boolean(status.carried);
@@ -444,7 +446,7 @@ function syncViewModel() {
   arm.rotation.x = 0.3;
   addBox(viewModel, 0.03, -0.02, 0, 0.17, 0.17, 0.2, standard(0xe9bd9e, 0.9), { castShadow: false });
   {
-    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color);
+    const model = makeItemModel(state.equipped, ITEMS[state.equipped].color, { held: true });
     model.rotation.y = Math.PI; // Item models point along +z; the camera looks along -z.
     model.position.set(0.02, 0.08, -0.1);
     model.traverse(child => { child.castShadow = false; });
@@ -494,7 +496,16 @@ function sendJoin() {
 }
 function sendPosition() {
   lastNetworkUpdate = performance.now();
-  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw, air: state.air });
+  socket?.emit('updatePlayer', { x: state.x, z: state.z, floor: state.floor, yaw: state.yaw, air: state.air, sprint: state.sprintingNow });
+}
+function setStamina(data) {
+  state.stamina = Number(data.value) || 0; state.maxStamina = Number(data.max) || 100;
+  const wasExhausted = state.exhausted;
+  state.exhausted = Boolean(data.exhausted);
+  if (state.exhausted && !wasExhausted) showNotice('Out of breath');
+  const fill = document.getElementById('staminaFill');
+  fill.style.width = `${(state.stamina / state.maxStamina) * 100}%`;
+  fill.classList.toggle('exhausted', state.exhausted);
 }
 function readableItem(item) {
   return ITEMS[item]?.name ?? item.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
@@ -578,7 +589,7 @@ function applySelfState(data) {
   state.ragingUntil = now + (Number(data.raging) || 0);
   state.boostedUntil = now + (Number(data.boosted) || 0);
   state.speed = Number(data.speed) || 1;
-  for (const flag of ['armor', 'mask', 'carrying', 'carried']) state[flag] = Boolean(data[flag]);
+  for (const flag of ['armor', 'mask', 'nightVision', 'carrying', 'carried']) state[flag] = Boolean(data[flag]);
   const wasJammed = state.jammed;
   state.jammed = Boolean(data.jammed);
   // Security cameras go dark inside an enemy jammer.
@@ -595,6 +606,7 @@ function applySelfState(data) {
   }
   if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown(), raging: now < state.ragingUntil, carried: state.carried });
   updateStatusEffect();
+  world.applySelf(data);
 }
 function updateStatusEffect() {
   const now = performance.now();
@@ -614,6 +626,7 @@ function updateStatusEffect() {
   else if (state.look) good.push('Disguised');
   if (state.armor) good.push('Vest');
   if (state.mask) good.push('Gas mask');
+  if (state.nightVision) good.push('Night vision');
   const text = [...bad, ...good].join(' · ');
   if (element.textContent !== text) element.textContent = text;
   element.classList.toggle('visible', Boolean(text));
@@ -666,6 +679,7 @@ function chooseRole(roleKey) {
 }
 function leaveToJoinScreen(message) {
   state.role = null;
+  world.reset();
   state.actor?.parent?.remove(state.actor); state.actor = null;
   selectItem(null);
   document.getElementById('roleLabel').textContent = 'ROLE · NONE';
@@ -715,6 +729,7 @@ if (socket) {
     }
   });
   socket.on('selfState', data => { if (data && state.role) applySelfState(data); });
+  socket.on('stamina', data => { if (data && state.role) setStamina(data); });
   socket.on('effect', data => {
     if (!data || typeof data.type !== 'string') return;
     effects.handle(data);
@@ -732,6 +747,8 @@ if (socket) {
   socket.on('pickups', list => { if (Array.isArray(list)) syncPickups(list); });
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
+
+const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice, floors, scene, makeItemModel, actorFor: id => remoteActors.get(id), lights: [[hemiLight, 1.75], [ambientLight, 0.35], [keyLight, 1.6]], glowing: MAINS_LIGHTING });
 
 // Which rooms on this floor hold the stairs up and the openings down.
 function updateStairHint() {
@@ -759,6 +776,9 @@ window.addEventListener('keydown', event => {
   keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'KeyQ') useAbility();
+  if (event.code === 'KeyE') world.interact();
+  if (event.code === 'Enter' || event.code === 'KeyT') { event.preventDefault(); world.openChat(); }
+  if (event.code === 'Escape') world.closeOverlays();
   if (event.code === 'KeyV' && state.role) setCameraMode(state.cameraMode === 'first' ? 'third' : 'first');
   if (event.code === 'Space') jump();
   if (/^Digit[1-6]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
@@ -840,6 +860,8 @@ document.addEventListener('contextmenu', event => { if (event.target.closest?.('
 document.addEventListener('selectstart', event => { if (!event.target.closest?.('input, textarea')) event.preventDefault(); });
 document.getElementById('abilityButton').addEventListener('click', useAbility);
 document.getElementById('viewButton').addEventListener('click', () => setCameraMode(state.cameraMode === 'first' ? 'third' : 'first'));
+document.getElementById('chatButton').addEventListener('click', () => world.openChat());
+document.getElementById('interactButton').addEventListener('pointerdown', event => { event.preventDefault(); world.interact(); });
 document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
 document.getElementById('fullscreenButton').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); } catch (_) { showNotice('Fullscreen is unavailable in this browser'); }
@@ -857,9 +879,11 @@ function animate() {
     if (joystick.active) { forward = -joystick.y; sideways = joystick.x; }
     const length = Math.hypot(forward, sideways); if (length > 1) { forward /= length; sideways /= length; }
     // Stunned, netted, carried or knocked-out players cannot move; the server ignores their position updates anyway.
-    const held = isStunned() || now < state.rootedUntil || state.carried;
+    const held = isStunned() || now < state.rootedUntil || state.carried || world.riding?.seat === 'passenger';
     if (held) { forward = 0; sideways = 0; }
-    const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting;
+    // Out of breath: walk until stamina has recovered.
+    const sprinting = (keys.has('ShiftLeft') || keys.has('ShiftRight') || state.sprinting) && !state.exhausted;
+    state.sprintingNow = sprinting && (forward !== 0 || sideways !== 0);
     // The server's multiplier already covers slows, boosts, carrying and hiding in a prop.
     const speed = (sprinting ? 14 : 8) * state.speed;
     // The camera sits behind the player at +(sin yaw, cos yaw), so "forward" points the other way.
@@ -868,7 +892,9 @@ function animate() {
     // Each axis moves separately so you slide along walls; staircases can carry you to another floor.
     const tryMove = (x, z) => {
       const step = LAYOUT.stairMove(state.floor, state.x, state.z, x, z);
-      if (!step || blocked(x, z, step.floor)) return;
+      if (!step || blocked(x, z, step.floor) || world.doorBlocks(state.x, state.z, x, z, step.floor, PLAYER_RADIUS)) return;
+      // Vehicles stay on their floor and off the stairs.
+      if (world.riding && (step.floor !== state.floor || step.height > 0)) return;
       state.x = x; state.z = z; state.ground = step.height;
       if (step.floor !== state.floor) { setFloor(step.floor); updateStairHint(); showNotice(`Entered ${FLOOR_NAMES[state.floor]}`); }
     };
@@ -898,6 +924,7 @@ function animate() {
     updateSlotCooldowns(now);
     updateStatusEffect();
   }
+  world.update(now, dt);
   // Remote players glide towards their last reported position instead of jumping every tick.
   const smoothing = 1 - Math.exp(-12 * dt);
   for (const actor of remoteActors.values()) {
