@@ -10,7 +10,9 @@ const STAIR_SEED = Number(process.env.STAIR_SEED) || 1 + Math.floor(Math.random(
 globalThis.STAIR_SEED = STAIR_SEED;
 const LAYOUT = require('./public/layout.js');
 
-const VERSION = '2026.11.17-1';
+const VERSION = '2026.11.17-2';
+// Changes on every start (each deploy restarts the server), so open pages can tell they are out of date.
+const BUILD = `${VERSION}-${Date.now().toString(36)}`;
 const app = express();
 app.disable('x-powered-by');
 const server = http.createServer(app);
@@ -1076,7 +1078,7 @@ setInterval(() => {
 }, TICK_MS);
 
 io.on('connection', socket => {
-  socket.emit('serverReady', { ok: true, version: VERSION });
+  socket.emit('serverReady', { ok: true, version: VERSION, build: BUILD });
   socket.emit('doors', doorList());
   socket.emit('world', worldState());
   socket.emit('vehicles', vehicleList());

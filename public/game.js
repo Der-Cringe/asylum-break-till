@@ -669,6 +669,13 @@ function leaveToJoinScreen(message) {
 document.querySelectorAll('.roleButton').forEach(button => button.addEventListener('click', () => chooseRole(button.dataset.role)));
 
 if (socket) {
+  // After a deploy the server comes back as a new build; reload so nobody keeps playing an old client
+  // (without the newer HUD, chat or stamina) against the new server.
+  let serverBuild = null;
+  socket.on('serverReady', data => {
+    if (serverBuild && data?.build && data.build !== serverBuild) location.reload();
+    serverBuild = data?.build ?? serverBuild;
+  });
   socket.on('connect', () => { document.getElementById('statusLabel').textContent = state.role ? 'NETWORK · CONNECTED' : 'NETWORK · READY'; sendJoin(); });
   socket.on('disconnect', () => { document.getElementById('statusLabel').textContent = state.role ? 'LOCAL · RECONNECTING' : 'NETWORK · OFFLINE'; });
   socket.on('connect_error', () => { document.getElementById('statusLabel').textContent = 'LOCAL MODE · NETWORK OFFLINE'; });
