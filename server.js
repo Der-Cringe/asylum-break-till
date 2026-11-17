@@ -10,7 +10,7 @@ const STAIR_SEED = Number(process.env.STAIR_SEED) || 1 + Math.floor(Math.random(
 globalThis.STAIR_SEED = STAIR_SEED;
 const LAYOUT = require('./public/layout.js');
 
-const VERSION = '2026.11.15-3';
+const VERSION = '2026.11.17-1';
 const app = express();
 app.disable('x-powered-by');
 const server = http.createServer(app);
@@ -19,8 +19,8 @@ const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
 const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween, stairBody, stairHeight } = LAYOUT;
 const INVENTORIES = {
-  patient: ['glassShard'],
-  medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher'],
+  patient: ['glassShard', 'shove'],
+  medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'],
   orderly: ['riotShield', 'taser', 'stunBaton', 'arrestCuffs', 'flashGrenade'],
   director: ['stunBaton', 'shockShield', 'arrestCuffs', 'tablet'],
 };
@@ -37,11 +37,16 @@ const EVENTS_PER_SECOND = 30;
 const RESPAWN_MS = 5000;
 const PICKUP_RADIUS = 2;
 const PICKUP_RESPAWN_MS = 40_000;
+const PLAYER_RADIUS = 0.6;
+const CARRY_HEIGHT = 2.2;
+// Hiding in a prop is slow going.
+const LOOK_SPEED = { box: 0.6, bush: 0.35 };
+const ZONE_TYPES = new Set(['fire', 'gas', 'healing', 'jam']);
 const PICKUP_SPOTS = LAYOUT.PICKUPS.map(spot => ({ ...spot, pool: LAYOUT.LOOT[spot.pool] }));
 
 const players = new Map();
 const sessions = new Map(); // session token -> { player, expires } for players that dropped connection
-const zones = new Map(); // id -> burning fire patches
+const zones = new Map(); // id -> fire, gas, healing and jammer areas
 const mines = new Map(); // id -> placed floor mines
 const pickups = PICKUP_SPOTS.map((spot, id) => ({ id, ...spot, item: null, respawnAt: 0 }));
 let nextEntityId = 1;
@@ -71,10 +76,17 @@ const onStairsBetween = (floorA, floorB, x, z) => STAIRS.some(stair => {
   return x > box.minX - STAIR_SLACK && x < box.maxX + STAIR_SLACK && z > box.minZ - STAIR_SLACK && z < box.maxZ + STAIR_SLACK;
 });
 const teamOf = role => (role === 'patient' ? 'patient' : 'staff');
-const canUse = (player, item) => ITEMS[item] && (ITEMS[item].team === 'all' || ITEMS[item].team === teamOf(player.role));
+const canUse = (player, item) => {
+  const def = ITEMS[item];
+  if (!def || (def.team !== 'all' && def.team !== teamOf(player.role))) return false;
+  return !def.roles || def.roles.includes(player.role);
+};
 const hostile = (a, b) => a !== b && teamOf(a.role) !== teamOf(b.role);
 const isDown = (player, now = Date.now()) => player.downUntil > now;
 const isStunned = (player, now = Date.now()) => player.stunUntil > now || player.holdUntil > now || isDown(player, now);
+// Rooted players (netted) cannot walk, but can still use items.
+const isRooted = (player, now = Date.now()) => player.rootUntil > now || Boolean(player.carriedBy);
+const isRaging = (player, now = Date.now()) => player.rageUntil > now;
 function cleanName(value) {
   return String(value ?? '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Player';
 }
@@ -85,6 +97,7 @@ function publicState(player) {
     id, name, role, x, z, floor, yaw, health, maxHealth, air,
     equippedItem: player.equipped?.item ?? null,
     look: player.look, stunned: isStunned(player, now), down: isDown(player, now),
+    rooted: player.rootUntil > now, raging: isRaging(player, now), carried: Boolean(player.carriedBy),
   };
 }
 // Everything the owning client needs for its own HUD. Timers go out as remaining milliseconds,
@@ -100,6 +113,11 @@ function selfState(player) {
     slowed: Math.max(0, player.slowUntil - now),
     speed: speedMultiplier(player, now),
     look: player.look,
+    rooted: Math.max(0, player.rootUntil - now),
+    raging: Math.max(0, player.rageUntil - now),
+    boosted: Math.max(0, player.boostUntil - now),
+    jammed: player.jammed, armor: player.armor < 1, mask: player.mask,
+    carrying: Boolean(player.carrying), carried: Boolean(player.carriedBy),
   };
 }
 function sendSelf(player) {
@@ -120,7 +138,8 @@ function freshLoadout(role) {
 function speedMultiplier(player, now = Date.now()) {
   let speed = player.boostUntil > now ? player.boostMultiplier : 1;
   if (player.slowUntil > now) speed *= 0.55;
-  return speed;
+  if (player.carrying) speed *= 0.8;
+  return speed * (LOOK_SPEED[player.look] ?? 1);
 }
 function notify(player, message) {
   io.to(player.id).emit('abilityFeedback', { ok: true, message });
@@ -134,6 +153,27 @@ function effect(data) {
 // The character looks along (-sin yaw, -cos yaw): the camera sits behind it at +(sin, cos).
 function facing(player) {
   return { x: -Math.sin(player.yaw), z: -Math.cos(player.yaw) };
+}
+// Whether a player could stand at (x, z): not inside a wall or a piece of furniture.
+function spotFree(floor, x, z) {
+  if (Math.abs(x) > BOUNDS.x || Math.abs(z) > BOUNDS.z) return false;
+  return !LAYOUT.solids[floor].some(box => x + PLAYER_RADIUS > box.minX && x - PLAYER_RADIUS < box.maxX && z + PLAYER_RADIUS > box.minZ && z - PLAYER_RADIUS < box.maxZ);
+}
+// Moves a player up to `distance` along (dx, dz), stopping in front of the first obstacle. `onStep`
+// may return true to stop early. Returns how far the player got.
+function slide(player, dx, dz, distance, onStep) {
+  const STEP = 0.25;
+  let travelled = 0;
+  while (travelled + STEP <= distance) {
+    const x = player.x + dx * STEP, z = player.z + dz * STEP;
+    if (!spotFree(player.floor, x, z) || wallBetween(player.floor, player.x, player.z, x, z)) break;
+    player.x = x; player.z = z; travelled += STEP;
+    if (onStep?.()) break;
+  }
+  player.y = FLOOR_Y[player.floor] + stairHeight(player.floor, player.x, player.z);
+  io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
+  dirty = true;
+  return travelled;
 }
 // Players in front of `player` within `range` and within `arc` radians of where it is facing, nearest first.
 function targetsInFront(player, range, arc, filter) {
@@ -155,9 +195,11 @@ function blockedByShield(target, fromX, fromZ) {
   const dir = facing(target);
   return (fromX - target.x) * dir.x + (fromZ - target.z) * dir.z > 0;
 }
+// Berserk players hit harder.
+const power = (attacker, now = Date.now()) => (attacker && isRaging(attacker, now) ? attacker.rageMultiplier : 1);
 function damage(target, amount, attacker) {
   if (isDown(target) || amount <= 0) return;
-  target.health = Math.max(0, target.health - amount);
+  target.health = Math.max(0, target.health - amount * (target.armor ?? 1));
   effect({ type: 'hit', x: target.x, z: target.z, floor: target.floor });
   if (target.health === 0) knockDown(target, attacker);
   sendSelf(target);
@@ -170,18 +212,45 @@ function slow(target, seconds) {
   if (seconds > 0) target.slowUntil = Math.max(target.slowUntil, Date.now() + seconds * 1000);
   sendSelf(target);
 }
+function root(target, seconds) {
+  if (seconds > 0) target.rootUntil = Math.max(target.rootUntil, Date.now() + seconds * 1000);
+  sendSelf(target);
+}
+function boost(target, multiplier, seconds) {
+  target.boostUntil = Date.now() + seconds * 1000; target.boostMultiplier = multiplier;
+  sendSelf(target);
+}
+// Ends a carry from either side: the carried player is put down where the carrier stands.
+function releaseCarry(player) {
+  const carrier = player.carrying ? player : players.get(player.carriedBy);
+  const carried = player.carrying ? players.get(player.carrying) : player;
+  if (carrier) { carrier.carrying = null; sendSelf(carrier); }
+  if (!carried) return;
+  carried.carriedBy = null; carried.air = 0;
+  // A short grace period so the carried player does not run off the moment they land.
+  carried.holdUntil = Math.max(Date.now() + 500, Math.min(carried.holdUntil, Date.now() + 500));
+  if (carrier && spotFree(carrier.floor, carrier.x, carrier.z)) Object.assign(carried, { x: carrier.x, z: carrier.z, floor: carrier.floor });
+  io.to(carried.id).emit('positionCorrection', { x: carried.x, z: carried.z, floor: carried.floor });
+  sendSelf(carried);
+}
 function knockDown(target, attacker) {
   target.downUntil = Date.now() + RESPAWN_MS;
   target.look = null;
+  if (target.carrying) releaseCarry(target);
   notify(target, attacker ? `Knocked out by ${attacker.name}` : 'Knocked out');
   if (attacker) notify(attacker, `You knocked out ${target.name}`);
 }
+// Status that every fresh (or respawned) player starts with.
+const FRESH_STATUS = () => ({
+  downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
+  look: null, combo: null, armor: 1, mask: false, jammed: false, carrying: null, carriedBy: null, air: 0,
+});
 function respawn(player) {
+  if (player.carrying || player.carriedBy) releaseCarry(player);
   const spawn = SPAWNS[player.role];
-  Object.assign(player, {
+  Object.assign(player, FRESH_STATUS(), {
     x: spawn.x, z: spawn.z, floor: spawn.floor, y: FLOOR_Y[spawn.floor],
-    health: player.maxHealth, downUntil: 0, stunUntil: 0, slowUntil: 0, boostUntil: 0, look: null,
-    inventory: freshLoadout(player.role), equipped: null, combo: null,
+    health: player.maxHealth, inventory: freshLoadout(player.role), equipped: null,
   });
   io.to(player.id).emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
   sendSelf(player);
@@ -193,24 +262,30 @@ function meleeHit(attacker, target, def) {
     // Count consecutive hits on the same target inside the combo window.
     const combo = attacker.combo?.target === target.id && attacker.combo.until > now ? attacker.combo.count + 1 : 1;
     attacker.combo = { target: target.id, count: combo >= def.combo.stunOn ? 0 : combo, until: now + def.combo.window * 1000 };
-    damage(target, def.damage, attacker);
+    damage(target, def.damage * power(attacker, now), attacker);
     if (combo >= def.combo.stunOn) stun(target, def.combo.stun);
     else if (combo >= def.combo.slowOn) slow(target, def.combo.slow);
     return;
   }
   const wasSlowed = target.slowUntil > now;
-  damage(target, def.damage, attacker);
+  damage(target, def.damage * power(attacker, now), attacker);
   if (def.stunIfSlowed && wasSlowed) stun(target, def.stunIfSlowed);
   else if (def.slow) slow(target, def.slow);
   if (def.stun) stun(target, def.stun);
+  if (def.push) pushAway(attacker, target, def.push);
+}
+function pushAway(from, target, distance) {
+  if (target.carriedBy) return;
+  const dx = target.x - from.x, dz = target.z - from.z, length = Math.hypot(dx, dz) || 1;
+  slide(target, dx / length, dz / length, distance);
 }
 // Explosions, flashes and fire land at a point on a floor and affect everyone around it.
 function detonate(owner, floor, x, z, fx) {
   effect({ type: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
-  if (fx.type === 'fire') {
+  if (ZONE_TYPES.has(fx.type)) {
     const id = nextEntityId++;
-    zones.set(id, { id, owner: owner.id, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, until: Date.now() + fx.duration * 1000 });
-    effect({ type: 'zone', id, x, z, floor, radius: fx.radius, duration: fx.duration });
+    zones.set(id, { id, kind: fx.type, owner: owner.id, ownerTeam: teamOf(owner.role), floor, x, z, radius: fx.radius, dps: fx.dps, hps: fx.hps, until: Date.now() + fx.duration * 1000 });
+    effect({ type: 'zone', id, kind: fx.type, x, z, floor, radius: fx.radius, duration: fx.duration });
     return;
   }
   for (const target of players.values()) {
@@ -219,12 +294,16 @@ function detonate(owner, floor, x, z, fx) {
     if (distance > fx.radius || wallBetween(floor, x, z, target.x, target.z)) continue;
     if (blockedByShield(target, x, z)) { effect({ type: 'block', x: target.x, z: target.z, floor }); continue; }
     const closeness = 1 - distance / fx.radius;
-    // A flash is bright for everyone standing in it, whichever side threw it.
-    if (fx.blind) io.to(target.id).emit('blinded', { duration: fx.blind * (0.4 + closeness * 0.6), strength: 0.75 + closeness * 0.25 });
+    // A flash is bright for everyone standing in it, whichever side threw it; a splat only hits enemies.
+    if (fx.blind && (fx.type === 'flash' || hostile(owner, target))) blind(target, fx.blind * (0.4 + closeness * 0.6), 0.75 + closeness * 0.25);
     if (!hostile(owner, target)) continue;
     if (fx.maxDamage) damage(target, Math.round(fx.minDamage + (fx.maxDamage - fx.minDamage) * closeness), owner);
     if (fx.stun) stun(target, fx.stun * (0.5 + closeness * 0.5));
+    if (fx.slow) slow(target, fx.slow);
   }
+}
+function blind(target, seconds, strength = 1) {
+  io.to(target.id).emit('blinded', { duration: seconds, strength });
 }
 // The thrower may disconnect before the fuse runs out; effects still need a team to aim at.
 function ownerSnapshot(player) {
@@ -241,10 +320,62 @@ const USE_HANDLERS = {
     const [target] = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other));
     const dir = facing(player);
     const end = target ? { x: target.x, z: target.z } : { x: player.x + dir.x * def.range, z: player.z + dir.z * def.range };
-    effect({ type: 'ray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: end.x, z2: end.z, color: def.color });
-    if (target) {
-      if (blockedByShield(target, player.x, player.z)) effect({ type: 'block', x: target.x, z: target.z, floor: target.floor });
-      else stun(target, def.stun);
+    effect({ type: 'ray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: end.x, z2: end.z, color: def.color, net: Boolean(def.root) });
+    if (!target) return true;
+    if (blockedByShield(target, player.x, player.z)) { effect({ type: 'block', x: target.x, z: target.z, floor: target.floor }); return true; }
+    if (def.damage) damage(target, def.damage * power(player), player);
+    if (def.stun) stun(target, def.stun);
+    if (def.slow) slow(target, def.slow);
+    if (def.root) root(target, def.root);
+    if (def.blind) blind(target, def.blind, 0.6);
+    if (def.pull && !target.carriedBy) {
+      // Reel the target in until it is right in front of the user.
+      const dx = player.x - target.x, dz = player.z - target.z, distance = Math.hypot(dx, dz);
+      if (distance > 2) slide(target, dx / distance, dz / distance, distance - 2);
+    }
+    return true;
+  },
+  // Hits everyone around the user at once: enemies get the stun or slow, allies the speed boost.
+  pulse(player, def) {
+    effect({ type: 'pulse', x: player.x, z: player.z, floor: player.floor, radius: def.radius, color: def.color });
+    for (const other of players.values()) {
+      if (other.floor !== player.floor || isDown(other) || Math.hypot(other.x - player.x, other.z - player.z) > def.radius) continue;
+      if (other !== player && wallBetween(player.floor, player.x, player.z, other.x, other.z)) continue;
+      if (hostile(player, other)) {
+        if (def.stun) stun(other, def.stun);
+        if (def.slow) slow(other, def.slow);
+      } else if (def.ally) {
+        boost(other, def.ally.speed, def.ally.duration);
+        if (other !== player) notify(other, `${player.name} rallies you`);
+      }
+    }
+    return true;
+  },
+  push(player, def) {
+    const [target] = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && !isDown(other));
+    effect({ type: 'swing', by: player.id });
+    if (!target) return true;
+    if (blockedByShield(target, player.x, player.z)) { effect({ type: 'block', x: target.x, z: target.z, floor: target.floor }); return true; }
+    pushAway(player, target, def.push);
+    if (def.stun) stun(target, def.stun);
+    effect({ type: 'hit', x: target.x, z: target.z, floor: target.floor });
+    return true;
+  },
+  // Charges forward and bowls over the first enemy in the way.
+  dash(player, def) {
+    if (isRooted(player)) { notify(player, 'You cannot charge while held'); return false; }
+    const dir = facing(player);
+    const x1 = player.x, z1 = player.z;
+    let victim = null;
+    slide(player, dir.x, dir.z, def.distance, () => {
+      victim = [...players.values()].find(other => other.floor === player.floor && hostile(player, other) && !isDown(other)
+        && Math.hypot(other.x - player.x, other.z - player.z) < 1.6) ?? null;
+      return Boolean(victim);
+    });
+    effect({ type: 'dash', by: player.id, floor: player.floor, x1, z1, x2: player.x, z2: player.z });
+    if (victim) {
+      if (blockedByShield(victim, player.x, player.z)) { effect({ type: 'block', x: victim.x, z: victim.z, floor: victim.floor }); stun(player, 1); }
+      else { damage(victim, def.damage * power(player), player); stun(victim, def.stun); }
     }
     return true;
   },
@@ -261,7 +392,28 @@ const USE_HANDLERS = {
     const floor = player.floor;
     const owner = ownerSnapshot(player);
     effect({ type: 'throw', by: player.id, item: player.equipped.item, floor, x1: player.x, z1: player.z, x2: to.x, z2: to.z, flight: def.flight, fuse: def.fuse ?? 0 });
-    setTimeout(() => detonate(owner, floor, to.x, to.z, def.effect), (def.flight + (def.fuse ?? 0)) * 1000);
+    if (!def.sticky) {
+      setTimeout(() => detonate(owner, floor, to.x, to.z, def.effect), (def.flight + (def.fuse ?? 0)) * 1000);
+      return true;
+    }
+    // Sticky bombs latch on to the nearest enemy where they land and go off wherever that enemy runs.
+    setTimeout(() => {
+      let victim = null, best = def.sticky;
+      for (const other of players.values()) {
+        const distance = Math.hypot(other.x - to.x, other.z - to.z);
+        if (other.floor === floor && hostile(owner, other) && !isDown(other) && distance < best) { victim = other; best = distance; }
+      }
+      if (victim) { effect({ type: 'stuck', id: victim.id, fuse: def.fuse ?? 0 }); notify(victim, 'Something is stuck to you!'); }
+      setTimeout(() => {
+        const at = victim && players.get(victim.id) === victim ? victim : { floor, x: to.x, z: to.z };
+        detonate(owner, at.floor, at.x, at.z, def.effect);
+      }, (def.fuse ?? 0) * 1000);
+    }, def.flight * 1000);
+    return true;
+  },
+  // Sets a zone down right where the user stands.
+  deploy(player, def) {
+    detonate(ownerSnapshot(player), player.floor, player.x, player.z, def.effect);
     return true;
   },
   place(player, def) {
@@ -272,12 +424,42 @@ const USE_HANDLERS = {
   },
   disguise(player, def) {
     player.look = def.look;
-    notify(player, 'Disguised · attacking blows your cover');
+    notify(player, LOOK_SPEED[def.look] ? 'Hidden · move slowly, using an item gives you away' : 'Disguised · attacking blows your cover');
+    return true;
+  },
+  wear(player, def) {
+    if (def.armor) player.armor = Math.min(player.armor, def.armor);
+    if (def.mask) player.mask = true;
+    notify(player, `${def.name} on · until you are knocked out`);
+    return true;
+  },
+  restrain(player, def) {
+    const [target] = targetsInFront(player, def.range, def.arc, other => hostile(player, other) && isStunned(other) && !isDown(other) && !other.carriedBy);
+    if (!target) { notify(player, `${def.name} needs a stunned enemy in front of you`); return false; }
+    target.holdUntil = Math.max(target.holdUntil, Date.now() + def.hold * 1000);
+    notify(target, `Restrained by ${player.name}`);
+    notify(player, `${target.name} is restrained`);
+    sendSelf(target);
+    return true;
+  },
+  carry(player, def) {
+    if (player.carrying) { releaseCarry(player); return true; }
+    const [target] = targetsInFront(player, def.range, def.arc, other => isStunned(other) && !other.carriedBy && !other.carrying);
+    if (!target) { notify(player, 'Nobody stunned or knocked out to pick up'); return false; }
+    player.carrying = target.id;
+    player.carryUntil = Date.now() + def.hold * 1000;
+    target.carriedBy = player.id;
+    // A knocked-out player is carried until they would have respawned anyway.
+    if (!isDown(target)) target.holdUntil = Math.max(target.holdUntil, player.carryUntil);
+    notify(target, `${player.name} is carrying you`);
+    notify(player, `Carrying ${target.name} · use again to put down`);
+    sendSelf(target);
     return true;
   },
   arrest(player, def) {
     const [target] = targetsInFront(player, def.range, def.arc, other => other.role === 'patient' && isStunned(other));
     if (!target) { notify(player, 'Arrest needs a stunned or knocked-out patient in front of you'); return false; }
+    if (target.carriedBy) releaseCarry(target);
     const spawn = SPAWNS.patient;
     respawn(target);
     Object.assign(target, { x: spawn.x, z: spawn.z, floor: spawn.floor, holdUntil: Date.now() + def.hold * 1000 });
@@ -291,7 +473,7 @@ const USE_HANDLERS = {
     const dir = facing(player);
     effect({ type: 'spray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: player.x + dir.x * def.range, z2: player.z + dir.z * def.range });
     for (const zone of zones.values()) {
-      if (zone.floor !== player.floor) continue;
+      if (zone.floor !== player.floor || (zone.kind !== 'fire' && zone.kind !== 'gas')) continue;
       const dx = zone.x - player.x, dz = zone.z - player.z, distance = Math.hypot(dx, dz);
       if (distance - zone.radius > def.range) continue;
       if (distance < zone.radius || (dx * dir.x + dz * dir.z) / distance > Math.cos(def.arc)) endZone(zone);
@@ -303,6 +485,7 @@ const USE_HANDLERS = {
     const patient = target || player;
     if (patient.health >= patient.maxHealth) { notify(player, 'Nobody here needs healing'); return false; }
     patient.health = Math.min(patient.maxHealth, patient.health + def.heal);
+    if (def.beam && patient !== player) effect({ type: 'ray', by: player.id, floor: player.floor, x1: player.x, z1: player.z, x2: patient.x, z2: patient.z, color: def.color });
     effect({ type: 'heal', x: patient.x, z: patient.z, floor: patient.floor });
     if (patient !== player) notify(patient, `${player.name} patched you up`);
     sendSelf(patient);
@@ -310,7 +493,8 @@ const USE_HANDLERS = {
   },
   consume(player, def) {
     if (def.heal) player.health = Math.min(player.maxHealth, player.health + def.heal);
-    if (def.speed) { player.boostUntil = Date.now() + def.speed.duration * 1000; player.boostMultiplier = def.speed.multiplier; }
+    if (def.speed) boost(player, def.speed.multiplier, def.speed.duration);
+    if (def.rage) { player.rageUntil = Date.now() + def.rage.duration * 1000; player.rageMultiplier = def.rage.multiplier; }
     effect({ type: 'heal', x: player.x, z: player.z, floor: player.floor });
     return true;
   },
@@ -326,8 +510,9 @@ function useItem(player) {
   const def = ITEMS[slot.item];
   const handler = USE_HANDLERS[def.kind];
   if (!handler) return;
-  // Hitting anyone with a weapon blows a disguise; healing and drinking do not.
-  if (player.look && !['heal', 'consume', 'disguise'].includes(def.kind)) player.look = null;
+  if (def.electric && player.jammed) { notify(player, 'Signal jammed · electronics are down here'); return; }
+  // Hitting anyone with a weapon blows a disguise; healing, drinking and dressing up do not.
+  if (player.look && !['heal', 'consume', 'disguise', 'wear'].includes(def.kind)) player.look = null;
   if (!handler(player, def)) return;
   slot.readyAt = now + (def.cooldown ?? 0.5) * 1000;
   if (slot.uses !== null && --slot.uses <= 0) {
@@ -361,18 +546,34 @@ setInterval(() => {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expires < now) sessions.delete(token);
 
+  for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
-    // Let the HUD know when a stun, slow or speed boost runs out.
-    const flags = `${isStunned(player, now)}|${player.slowUntil > now}|${player.boostUntil > now}`;
-    if (flags !== player.lastFlags) { player.lastFlags = flags; sendSelf(player); }
-  }
-  for (const zone of zones.values()) {
-    if (zone.until <= now) { endZone(zone); continue; }
-    for (const target of players.values()) {
-      if (target.floor !== zone.floor || teamOf(target.role) === zone.ownerTeam) continue;
-      if (Math.hypot(target.x - zone.x, target.z - zone.z) <= zone.radius) damage(target, zone.dps * TICK_MS / 1000, players.get(zone.owner));
+    player.jammed = false;
+    for (const zone of zones.values()) {
+      if (player.floor !== zone.floor || Math.hypot(player.x - zone.x, player.z - zone.z) > zone.radius) continue;
+      const enemyZone = teamOf(player.role) !== zone.ownerTeam;
+      if (zone.kind === 'fire' && enemyZone) damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
+      else if (zone.kind === 'gas' && enemyZone && !player.mask) {
+        damage(player, zone.dps * TICK_MS / 1000, players.get(zone.owner));
+        player.slowUntil = Math.max(player.slowUntil, now + 600);
+      } else if (zone.kind === 'healing' && !enemyZone && !isDown(player, now) && player.health < player.maxHealth) {
+        player.health = Math.min(player.maxHealth, player.health + zone.hps * TICK_MS / 1000);
+        sendSelf(player);
+      } else if (zone.kind === 'jam' && enemyZone) player.jammed = true;
     }
+    // Carried players ride on the carrier's shoulders.
+    if (player.carrying) {
+      const carried = players.get(player.carrying);
+      if (!carried || isStunned(player, now) || now > player.carryUntil) releaseCarry(player);
+      else {
+        Object.assign(carried, { x: player.x, z: player.z, floor: player.floor, y: player.y, yaw: player.yaw, air: CARRY_HEIGHT + player.air });
+        dirty = true;
+      }
+    }
+    // Let the HUD know when a stun, slow, boost, net, rage or jammer runs out.
+    const flags = `${isStunned(player, now)}|${player.slowUntil > now}|${player.boostUntil > now}|${player.rootUntil > now}|${isRaging(player, now)}|${player.jammed}`;
+    if (flags !== player.lastFlags) { player.lastFlags = flags; sendSelf(player); }
   }
   for (const mine of mines.values()) {
     if (mine.armedAt > now) continue;
@@ -400,7 +601,7 @@ io.on('connection', socket => {
   socket.emit('serverReady', { ok: true, version: VERSION });
   socket.emit('pickups', pickupList());
   for (const mine of mines.values()) socket.emit('effect', { type: 'mine', id: mine.id, floor: mine.floor, x: mine.x, z: mine.z });
-  for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
+  for (const zone of zones.values()) socket.emit('effect', { type: 'zone', id: zone.id, kind: zone.kind, x: zone.x, z: zone.z, floor: zone.floor, radius: zone.radius, duration: (zone.until - Date.now()) / 1000 });
 
   // Simple token bucket so a single client cannot flood the server with events.
   let budget = EVENTS_PER_SECOND;
@@ -431,7 +632,7 @@ io.on('connection', socket => {
       id: socket.id, name: cleanName(data.name), role,
       x: spawn.x, y: FLOOR_Y[spawn.floor], z: spawn.z, floor: spawn.floor, yaw: 0,
       health: MAX_HEALTH[role], maxHealth: MAX_HEALTH[role], inventory: freshLoadout(role), equipped: null,
-      stunUntil: 0, slowUntil: 0, holdUntil: 0, downUntil: 0, boostUntil: 0, boostMultiplier: 1, look: null, combo: null, air: 0,
+      ...FRESH_STATUS(),
       ...(resumed && {
         x: resumed.x, y: resumed.y, z: resumed.z, floor: resumed.floor, health: resumed.health,
         inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look,
@@ -465,8 +666,8 @@ io.on('connection', socket => {
     const elapsed = Math.min((now - player.lastMove) / 1000, 1);
     player.lastMove = now;
     player.yaw = finiteClamp(data.yaw, -1e4, 1e4, player.yaw);
-    // Stunned, knocked-out and freshly arrested players stay where they are.
-    if (isStunned(player, now)) {
+    // Stunned, knocked-out, netted, carried and freshly arrested players stay where they are.
+    if (isStunned(player, now) || isRooted(player, now)) {
       if (data.x !== player.x || data.z !== player.z || data.floor !== player.floor) socket.emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
       dirty = true;
       return;
@@ -500,6 +701,7 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     const player = players.get(socket.id);
+    if (player && (player.carrying || player.carriedBy)) releaseCarry(player);
     if (player?.session) sessions.set(player.session, { player, expires: Date.now() + SESSION_TTL_MS });
     players.delete(socket.id);
     dirty = true;

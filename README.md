@@ -20,6 +20,14 @@ All item stats live in `public/items.js`, which both the server and the browser 
 - **Loot:** items spawn at fixed spots around the map and respawn 40 s after someone takes them. Walk over one to pick it up (max 6 slots).
 - **Status:** stunned players cannot move or use items, slowed players are slower, at 0 health a player is knocked out and respawns after 5 s with their starting loadout.
 - **Arrest:** staff can cuff a stunned or knocked-out patient, who goes back to the ward and is held for 8 s.
+- **78 items** in four loot pools (`patient`, `staff`, `medical`, `common` in `layout.js`). Besides weapons, throwables and med kits there are:
+  - **Rays** that stun, damage, slow, net (can't walk, can still fight), blind or pull the target in.
+  - **Pulses** around yourself (proximity taser, scream, rally flag), **shove** and **shoulder charge**.
+  - **Zones:** fire, gas (hurts and slows; a gas mask protects), healing mist, and a signal jammer that switches off enemy items marked `electric` (tasers, launchers, the tablet's cameras).
+  - **Sticky bombs** that latch on to the nearest enemy, **berserk** drugs (more damage), a **combat vest** (less damage) and a **gas mask**, both worn until you are knocked out.
+  - **Disguises** as medic, orderly or director, or **hiding** as a cardboard box or a potted shrub (slow; using an item gives you away).
+  - **Straitjacket** (keeps a stunned patient in place) and **Fireman's Carry** (pick up a stunned player, use again to put them down).
+  - Items with `roles` are limited to those roles, e.g. the Medi Gun is medic-only.
 - The server decides every hit; the browser only shows what happened.
 
 ## Building
