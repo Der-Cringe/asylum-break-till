@@ -17,7 +17,7 @@ const server = http.createServer(app);
 const io = new Server(server, { serveClient: true, pingInterval: 25000, pingTimeout: 20000, maxHttpBufferSize: 1e4 });
 const PORT = Number(process.env.PORT) || 3000;
 // Floors, spawns, staircases, loot spots and walls live in public/layout.js, shared with the browser.
-const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, wallBetween, stairBody, stairHeight } = LAYOUT;
+const { FLOOR_Y, SPAWNS, STAIRS, BOUNDS, STATIONS, STATION_RANGE, wallBetween, stairBody, stairHeight } = LAYOUT;
 const INVENTORIES = {
   patient: ['glassShard', 'shove'],
   medic: ['smallMedicalKit', 'mediumMedicalKit', 'fireExtinguisher', 'mediGun', 'straitjacket'],
@@ -121,6 +121,8 @@ function selfState(player) {
     boosted: Math.max(0, player.boostUntil - now),
     jammed: player.jammed, armor: player.armor < 1, mask: player.mask,
     carrying: Boolean(player.carrying), carried: Boolean(player.carriedBy),
+    credits: player.credits, xp: player.xp, level: levelOf(player.xp),
+    work: player.work ? { label: player.work.label, left: Math.max(0, player.work.until - now), total: player.work.total } : null,
   };
 }
 function sendSelf(player) {
@@ -242,12 +244,13 @@ function knockDown(target, attacker) {
   if (target.carrying) releaseCarry(target);
   notify(target, attacker ? `Knocked out by ${attacker.name}` : 'Knocked out');
   if (attacker) notify(attacker, `You knocked out ${target.name}`);
+  if (attacker && hostile(attacker, target)) reward(attacker, 5, 10);
 }
 // Status that every fresh (or respawned) player starts with.
 const FRESH_STATUS = () => ({
   downUntil: 0, stunUntil: 0, slowUntil: 0, holdUntil: 0, boostUntil: 0, boostMultiplier: 1, rootUntil: 0, rageUntil: 0, rageMultiplier: 1,
   look: null, combo: null, armor: 1, mask: false, jammed: false, carrying: null, carriedBy: null, air: 0,
-  stamina: STAMINA.max, exhausted: false, sprintedAt: 0,
+  stamina: STAMINA.max, exhausted: false, sprintedAt: 0, work: null,
 });
 function sendStamina(player) {
   const value = Math.round(player.stamina);
@@ -477,6 +480,9 @@ const USE_HANDLERS = {
     const [target] = targetsInFront(player, def.range, def.arc, other => other.role === 'patient' && isStunned(other));
     if (!target) { notify(player, 'Arrest needs a stunned or knocked-out patient in front of you'); return false; }
     if (target.carriedBy) releaseCarry(target);
+    // Whatever contraband the patient carried is confiscated, and the arresting officer is paid for it.
+    const seized = target.inventory.reduce((sum, slot) => sum + (ITEMS[slot.item].value ?? 0), 0);
+    reward(player, 30 + Math.round(seized / 2), 25, seized ? 'Arrest · contraband seized' : 'Arrest');
     const spawn = SPAWNS.patient;
     respawn(target);
     Object.assign(target, { x: spawn.x, z: spawn.z, floor: spawn.floor, holdUntil: Date.now() + def.hold * 1000 });
@@ -564,6 +570,127 @@ function pickupList() {
   return pickups.filter(pickup => pickup.item).map(({ id, floor, x, z, item }) => ({ id, floor, x, z, item }));
 }
 
+// ---- Facility: stations, jobs, credits, shops, escape --------------------------------------------
+
+const levelOf = xp => 1 + Math.floor(Math.sqrt((xp || 0) / 60));
+const JOBS = {
+  laundry: { label: 'Doing laundry', seconds: 4, credits: 15, xp: 20, consumes: true },
+  paint: { label: 'Painting', seconds: 6, credits: 25, xp: 30, consumes: false },
+};
+const EXIT = { keycard: 4, pry: 12, credits: 200, xp: 150, pryTools: ['crowbar', 'fireAxe', 'rebarHammer'] };
+function reward(player, credits, xp, reason) {
+  const before = levelOf(player.xp);
+  player.credits += credits; player.xp += xp;
+  if (reason) notify(player, `+${credits} ¢ · +${xp} XP · ${reason}`);
+  if (levelOf(player.xp) > before) notify(player, `Level ${levelOf(player.xp)}!`);
+  sendSelf(player);
+}
+const hasItem = (player, item) => player.inventory.some(slot => slot.item === item);
+function takeItem(player, item) {
+  const slot = player.inventory.find(entry => entry.item === item);
+  if (!slot) return;
+  player.inventory = player.inventory.filter(entry => entry !== slot);
+  if (player.equipped === slot) player.equipped = null;
+}
+function nearestStation(player) {
+  let best = null, bestDistance = STATION_RANGE;
+  for (const station of STATIONS) {
+    if (station.floor !== player.floor) continue;
+    const distance = Math.hypot(station.x - player.x, station.z - player.z);
+    if (distance <= bestDistance) { best = station; bestDistance = distance; }
+  }
+  return best;
+}
+// Some stations take a while: stand still until the work is done. Moving or getting hit cancels it.
+function startWork(player, station, label, seconds, done) {
+  player.work = { station: station.id, label, until: Date.now() + seconds * 1000, total: seconds * 1000, x: player.x, z: player.z, floor: player.floor, done };
+  sendSelf(player);
+}
+function cancelWork(player, message) {
+  if (!player.work) return;
+  player.work = null;
+  if (message) notify(player, message);
+  sendSelf(player);
+}
+function shopList(player, station) {
+  return Object.entries(ITEMS)
+    .filter(([item, def]) => def.price && (def.team === 'all' || def.team === station.team) && canUse(player, item))
+    .map(([item, def]) => ({ item, price: def.price }));
+}
+function escape(player) {
+  reward(player, EXIT.credits, EXIT.xp, 'Escaped!');
+  for (const other of players.values()) if (other !== player) notify(other, `${player.name} escaped the facility!`);
+  respawn(player);
+}
+const STATION_HANDLERS = {
+  shop(player, station, socket) {
+    if (teamOf(player.role) !== station.team) { notify(player, `${station.label} · not for you`); return; }
+    const value = player.inventory.reduce((sum, slot) => sum + (ITEMS[slot.item].value ?? 0), 0);
+    socket.emit('shop', { station: station.id, label: station.label, credits: player.credits, items: shopList(player, station), sell: value });
+  },
+  job(player, station) {
+    const def = JOBS[station.job];
+    const tool = player.inventory.find(slot => ITEMS[slot.item].job === station.job);
+    if (!tool) { notify(player, station.job === 'laundry' ? 'Bring some laundry' : 'You need a paintbrush'); return; }
+    startWork(player, station, def.label, def.seconds, () => {
+      if (def.consumes) takeItem(player, tool.item);
+      reward(player, def.credits, def.xp, station.label);
+    });
+  },
+  exit(player, station) {
+    if (teamOf(player.role) !== 'patient') { notify(player, 'The exit is locked down'); return; }
+    if (hasItem(player, 'keycard')) {
+      startWork(player, station, 'Swiping keycard', EXIT.keycard, () => { takeItem(player, 'keycard'); escape(player); });
+      return;
+    }
+    const tool = EXIT.pryTools.find(item => hasItem(player, item));
+    if (!tool) { notify(player, 'Exit locked · find a keycard or something to pry it open'); return; }
+    startWork(player, station, `Prying with ${ITEMS[tool].name}`, EXIT.pry, () => escape(player));
+    for (const other of players.values()) if (teamOf(other.role) === 'staff') notify(other, 'Alarm · someone is forcing the main exit!');
+  },
+  breaker(player) { notify(player, 'Nothing happens'); },
+};
+function interact(player, socket) {
+  if (isStunned(player) || isRooted(player)) return;
+  if (player.work) { cancelWork(player, 'Stopped'); return; }
+  const station = nearestStation(player);
+  if (!station) return;
+  STATION_HANDLERS[station.type]?.(player, station, socket);
+}
+function buy(player, item) {
+  const station = nearestStation(player);
+  const def = ITEMS[item];
+  if (!station || station.type !== 'shop' || teamOf(player.role) !== station.team || !def?.price) return;
+  if (!shopList(player, station).some(entry => entry.item === item)) return;
+  if (player.credits < def.price) { notify(player, 'Not enough credits'); return; }
+  const owned = player.inventory.find(slot => slot.item === item);
+  if (owned && owned.uses === null) { notify(player, 'You already have one'); return; }
+  if (!owned && player.inventory.length >= MAX_SLOTS) { notify(player, 'Inventory full'); return; }
+  player.credits -= def.price;
+  if (owned) owned.uses += def.uses; else player.inventory.push(makeSlot(item));
+  notify(player, `Bought ${def.name}`);
+  sendSelf(player);
+}
+function sellContraband(player) {
+  const station = nearestStation(player);
+  if (!station || station.type !== 'shop' || station.team !== 'patient' || teamOf(player.role) !== 'patient') return;
+  const goods = player.inventory.filter(slot => ITEMS[slot.item].value);
+  if (!goods.length) return;
+  const value = goods.reduce((sum, slot) => sum + ITEMS[slot.item].value, 0);
+  player.inventory = player.inventory.filter(slot => !goods.includes(slot));
+  if (goods.includes(player.equipped)) player.equipped = null;
+  reward(player, value, Math.round(value / 4), 'Sold contraband');
+}
+function updateWork(player, now) {
+  const work = player.work;
+  if (!work) return;
+  if (isStunned(player, now) || player.floor !== work.floor || Math.hypot(player.x - work.x, player.z - work.z) > 0.8) { cancelWork(player, 'Interrupted'); return; }
+  if (now < work.until) return;
+  player.work = null;
+  work.done();
+  sendSelf(player);
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expires < now) sessions.delete(token);
@@ -571,6 +698,7 @@ setInterval(() => {
   for (const zone of zones.values()) if (zone.until <= now) endZone(zone);
   for (const player of players.values()) {
     if (player.downUntil && player.downUntil <= now) respawn(player);
+    updateWork(player, now);
     if (now - player.sprintedAt > 300 && player.stamina < STAMINA.max) {
       player.stamina = Math.min(STAMINA.max, player.stamina + STAMINA.regen * TICK_MS / 1000);
       if (player.exhausted && player.stamina >= STAMINA.recover) player.exhausted = false;
@@ -659,8 +787,9 @@ io.on('connection', socket => {
       id: socket.id, name: cleanName(data.name), role,
       x: spawn.x, y: FLOOR_Y[spawn.floor], z: spawn.z, floor: spawn.floor, yaw: 0,
       health: MAX_HEALTH[role], maxHealth: MAX_HEALTH[role], inventory: freshLoadout(role), equipped: null,
-      ...FRESH_STATUS(),
+      ...FRESH_STATUS(), credits: 0, xp: 0,
       ...(resumed && {
+        credits: resumed.credits, xp: resumed.xp,
         x: resumed.x, y: resumed.y, z: resumed.z, floor: resumed.floor, health: resumed.health,
         inventory: resumed.inventory, equipped: resumed.equipped, downUntil: resumed.downUntil, look: resumed.look, stamina: resumed.stamina,
       }),
@@ -722,6 +851,19 @@ io.on('connection', socket => {
     if (corrected) socket.emit('positionCorrection', { x: player.x, z: player.z, floor: player.floor });
     tryPickup(player);
     dirty = true;
+  });
+
+  socket.on('interact', () => {
+    const player = players.get(socket.id);
+    if (player) interact(player, socket);
+  });
+  socket.on('buy', data => {
+    const player = players.get(socket.id);
+    if (player && isObject(data) && typeof data.item === 'string') buy(player, data.item);
+  });
+  socket.on('sell', () => {
+    const player = players.get(socket.id);
+    if (player) sellContraband(player);
   });
 
   socket.on('useAbility', data => {

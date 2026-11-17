@@ -136,6 +136,24 @@
       effect: { type: 'jam', radius: 10, duration: 18 },
     },
 
+    // ---- Patients: jobs and loot to sell ----------------------------------------------------------
+    // `tool` items do nothing when used; they matter for jobs, doors, the exit and the commissary.
+    laundry: {
+      name: 'Laundry', kind: 'tool', team: 'patient', color: 0xdcd6c8, job: 'laundry',
+    },
+    paintbrush: {
+      name: 'Paintbrush', kind: 'tool', team: 'patient', color: 0xe05a8a, job: 'paint',
+    },
+    contraband: {
+      name: 'Contraband', kind: 'tool', team: 'patient', color: 0x8a6d3a, value: 40,
+    },
+    smuggledGoods: {
+      name: 'Smuggled Goods', kind: 'tool', team: 'patient', color: 0xd4af37, value: 120,
+    },
+    keycard: {
+      name: 'Stolen Keycard', kind: 'tool', team: 'patient', color: 0x5aa9ff,
+    },
+
     // ---- Staff: weapons ---------------------------------------------------------------------
     stunBaton: {
       name: 'Stun Baton', kind: 'melee', team: 'staff', color: 0x2c3540,
@@ -354,6 +372,19 @@
       effect: { type: 'splat', radius: 1.5, slow: 1, maxDamage: 2, minDamage: 2 },
     },
   };
+
+  // What the shops charge, in credits. Anything without a price cannot be bought.
+  const PRICES = {
+    glassShard: 30, tableLeg: 25, scrapMetal: 20, crowbar: 60, woodenBat: 45, crutch: 30, steelBat: 90, pipeSword: 80,
+    fireBottle: 70, pipeBomb: 110, stickyBomb: 130, floorMine: 90, berserkPills: 80, adrenalineShot: 60, stolenScrubs: 120,
+    cardboardBox: 50, pottedShrub: 60, gasMask: 70, paintbrush: 20, keycard: 250,
+    shockRod: 60, pocketStunner: 40, wrench: 30, janitorMop: 20, barrierShield: 70, stunPistol: 80, pepperballGun: 90,
+    netLauncher: 100, proximityTaser: 70, flashGrenade: 50, empGrenade: 60, gasGrenade: 70, empMine: 60,
+    straitjacket: 50, firemansCarry: 40, combatVest: 120, largeMedicalKit: 60, healingGrenade: 70, therapyGrenade: 60,
+    coffee: 10, tea: 5, bread: 10, mango: 20, candy: 10, energySoda: 25, smallMedicalKit: 25, mediumMedicalKit: 45,
+    tomato: 5, snowball: 5,
+  };
+  for (const [item, price] of Object.entries(PRICES)) if (ITEMS[item]) ITEMS[item].price = price;
 
   if (typeof module === 'object' && module.exports) module.exports = ITEMS;
   else root.ITEMS = ITEMS;

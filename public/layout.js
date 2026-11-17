@@ -30,6 +30,7 @@
       'crutch', 'pipeSword', 'fireAxe', 'rebarHammer', 'fireBottle', 'pipeBomb', 'nailBomb', 'stickyBomb', 'floorMine',
       'shoulderCharge', 'scream', 'rallyFlag', 'berserkPills', 'adrenalineShot', 'stolenScrubs', 'orderlyUniform',
       'directorSuit', 'cardboardBox', 'pottedShrub', 'gasMask', 'gasMask', 'signalJammer',
+      'laundry', 'laundry', 'laundry', 'paintbrush', 'contraband', 'contraband', 'smuggledGoods', 'keycard',
     ],
     staff: [
       'twinBaton', 'shockRod', 'pocketStunner', 'shockSpear', 'wrench', 'sledgehammer', 'janitorMop', 'voltShield',
@@ -41,7 +42,7 @@
       'smallMedicalKit', 'mediumMedicalKit', 'largeMedicalKit', 'mediGun', 'healingGrenade', 'therapyGrenade',
       'sedationPulse', 'straitjacket', 'firemansCarry', 'laserPistol',
     ],
-    common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit'],
+    common: ['coffee', 'coffee', 'tea', 'bread', 'bread', 'mango', 'candy', 'energySoda', 'tomato', 'snowball', 'smallMedicalKit', 'laundry', 'contraband'],
   };
   const PICKUPS = [
     { floor: 2, x: -30, z: 34, pool: 'patient' }, { floor: 2, x: 60, z: 28, pool: 'patient' },
@@ -61,6 +62,20 @@
     { floor: 0, x: -60, z: 0, pool: 'staff' }, { floor: 0, x: 60, z: 0, pool: 'patient' },
     { floor: 0, x: 0, z: -25, pool: 'common' }, { floor: 0, x: 0, z: 25, pool: 'staff' },
   ];
+
+  // Things to press E at. Shops sell to one team; jobs need their item in your inventory; the breaker
+  // cuts (patients) or restores (staff) the lights; the exit lets patients with a way out escape.
+  const STATIONS = [
+    { id: 'shopWard', type: 'shop', team: 'patient', label: 'Commissary', floor: 2, x: -10, z: 21.5 },
+    { id: 'shopVisit', type: 'shop', team: 'patient', label: 'Commissary', floor: 0, x: 43, z: 26.4 },
+    { id: 'shopStaff', type: 'shop', team: 'staff', label: 'Supply terminal', floor: 0, x: -64.4, z: -27 },
+    ...[10, 15, 20, 25, 30].map((x, i) => ({ id: `washer${i}`, type: 'job', job: 'laundry', label: 'Washing machine', floor: 0, x, z: 26 })),
+    { id: 'easelA', type: 'job', job: 'paint', label: 'Canvas', floor: 2, x: 44, z: -19.6 },
+    { id: 'easelB', type: 'job', job: 'paint', label: 'Canvas', floor: 2, x: 12.4, z: -40 },
+    { id: 'breaker', type: 'breaker', label: 'Breaker panel', floor: 0, x: 86, z: 20 },
+    { id: 'exit', type: 'exit', label: 'Main exit', floor: 0, x: -36, z: -63.4 },
+  ];
+  const STATION_RANGE = 3.5;
 
   // Security cameras for the director's tablet: mounted at (x, z) under the ceiling, looking at (tx, tz).
   const CAMERAS = [
@@ -485,6 +500,7 @@
     ...walls[floor].flatMap(w => w.doors.map(door => (w.z1 === w.z2 ? { x: door.at, z: w.z1 } : { x: w.x1, z: door.at }))),
     ...Object.values(SPAWNS).filter(spawn => spawn.floor === floor),
     ...PICKUPS.filter(spot => spot.floor === floor),
+    ...STATIONS.filter(spot => spot.floor === floor),
   ]);
   const roomOf = (floor, box) => rooms[floor].find(r => r.style !== 'corridor' && within(box, r, 0.4));
   const STAIRS = [];
@@ -611,7 +627,7 @@
   const LAYOUT = {
     FLOOR_Y, FLOOR_NAMES, WALL_HEIGHT, WALL_THICKNESS, DOOR_WIDTH, DOOR_HEIGHT, BOUNDS, SEED, STAIR, STAIRS,
     stairBox, stairBody, stairLocal, stairMove, stairHeight, stairNeighbours,
-    SPAWNS, LOOT, PICKUPS, CAMERAS, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
+    SPAWNS, LOOT, PICKUPS, CAMERAS, STATIONS, STATION_RANGE, walls, rooms, furniture, signs, solids, wallBoxes, wallPieces, footprint, wallBetween,
   };
   if (typeof module === 'object' && module.exports) module.exports = LAYOUT;
   else root.LAYOUT = LAYOUT;

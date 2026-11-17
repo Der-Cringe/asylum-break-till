@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-1';
+import { makeItemModel, EffectLayer } from './item-visuals.js?v=20261117-2';
 import { loadCharacterModels, buildCharacterModel } from './characters.js?v=20261115-2';
 import { buildInterior } from './interior.js?v=20261115-3';
+import { createWorld } from './world.js?v=20261117-1';
 
 const ITEMS = window.ITEMS || {};
 const LAYOUT = window.LAYOUT;
@@ -604,6 +605,7 @@ function applySelfState(data) {
   }
   if (state.actor) applyActorStatus(state.actor, { equippedItem: state.equipped, stunned: isStunned(), down: isDown(), raging: now < state.ragingUntil, carried: state.carried });
   updateStatusEffect();
+  world.applySelf(data);
 }
 function updateStatusEffect() {
   const now = performance.now();
@@ -675,6 +677,7 @@ function chooseRole(roleKey) {
 }
 function leaveToJoinScreen(message) {
   state.role = null;
+  world.reset();
   state.actor?.parent?.remove(state.actor); state.actor = null;
   selectItem(null);
   document.getElementById('roleLabel').textContent = 'ROLE · NONE';
@@ -743,6 +746,8 @@ if (socket) {
   socket.on('abilityFeedback', data => { if (data?.message) showNotice(data.message); });
 }
 
+const world = createWorld({ state, socket, LAYOUT, ITEMS, showNotice });
+
 // Which rooms on this floor hold the stairs up and the openings down.
 function updateStairHint() {
   const role = ROLES[state.role]; if (!role) return;
@@ -769,6 +774,8 @@ window.addEventListener('keydown', event => {
   keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'KeyQ') useAbility();
+  if (event.code === 'KeyE') world.interact();
+  if (event.code === 'Escape') world.closeOverlays();
   if (event.code === 'KeyV' && state.role) setCameraMode(state.cameraMode === 'first' ? 'third' : 'first');
   if (event.code === 'Space') jump();
   if (/^Digit[1-6]$/.test(event.code)) document.querySelectorAll('.equipment-slot')[Number(event.code.at(-1)) - 1]?.click();
@@ -850,6 +857,7 @@ document.addEventListener('contextmenu', event => { if (event.target.closest?.('
 document.addEventListener('selectstart', event => { if (!event.target.closest?.('input, textarea')) event.preventDefault(); });
 document.getElementById('abilityButton').addEventListener('click', useAbility);
 document.getElementById('viewButton').addEventListener('click', () => setCameraMode(state.cameraMode === 'first' ? 'third' : 'first'));
+document.getElementById('interactButton').addEventListener('pointerdown', event => { event.preventDefault(); world.interact(); });
 document.getElementById('useButton').addEventListener('pointerdown', event => { event.preventDefault(); useItem(); });
 document.getElementById('fullscreenButton').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); } catch (_) { showNotice('Fullscreen is unavailable in this browser'); }
@@ -910,6 +918,7 @@ function animate() {
     updateSlotCooldowns(now);
     updateStatusEffect();
   }
+  world.update(now);
   // Remote players glide towards their last reported position instead of jumping every tick.
   const smoothing = 1 - Math.exp(-12 * dt);
   for (const actor of remoteActors.values()) {
